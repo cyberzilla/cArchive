@@ -30,7 +30,7 @@ This class is a refactored combination of two VB6 projects:
 
 #### Creating/Extract a ZIP Archive
 
-The process involves adding files one by one and then compressing the archive.
+The process involves adding files one by one/folder and then compressing the archive.
 
 ```vb
 Private Sub CreateZip()
