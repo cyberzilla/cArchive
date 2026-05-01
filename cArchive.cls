@@ -241,7 +241,7 @@ End Type
 Private Const LNG_SIG_LOCAL                 As Long = &H4034B50
 Private Const LNG_SIG_CENTRAL               As Long = &H2014B50
 Private Const LNG_SIG_END                   As Long = &H6054B50
-Private Const LNG_SIG_DATADESC              As Long = &H7064B50
+Private Const LNG_SIG_DATADESC              As Long = &H8074B50
 Private Const LNG_SIG_EXTLOCAL              As Long = &H8074B50
 Private Const LNG_SIG_EOCDR                 As Long = &H6064B50
 Private Const LNG_SIG_LOCATOR               As Long = &H7064B50
@@ -590,6 +590,7 @@ End Property
 Public Function GzCompress(ByVal Source As Variant, ByRef Destination As Variant, Optional ByVal Level As ArchiveCompressionLevel = acNormalCompression) As Boolean
     ' Deskripsi:
     ' Mengkompresi sumber menjadi format GZ ke tujuan.
+    ' Menggunakan streaming (per-chunk) untuk mendukung file besar.
     '
     ' Parameter:
     ' Source (Variant): Sumber data yang akan dikompres. Bisa berupa:
@@ -603,66 +604,97 @@ Public Function GzCompress(ByVal Source As Variant, ByRef Destination As Variant
     Const FUNC_NAME As String = "GzCompress"
     Dim hCtx As Long, lResult As Long
     Dim uBuf As UcsZlibBuffersType
-    Dim sourceBuffer() As Byte, deflatedData() As Byte
-    Dim lCrc32 As Long, lSourceSize As Long
+    Dim baBuffer() As Byte, baNext() As Byte
+    Dim lCrc32 As Long, cTotalSize As Currency
     Dim gzHeader(0 To 9) As Byte, gzFooter(0 To 7) As Byte
-    Dim finalGzBuffer() As Byte
     Dim uSourceFile As UcsVfsFileType, uDestFile As UcsVfsFileType
+    Dim lSize As Long
+    Dim bToByteArray As Boolean
+    Dim baGzOut() As Byte
     
     On Error GoTo EH
     pvSetError
     
-    ' 1. Buka dan baca seluruh sumber menggunakan VFS
-    uSourceFile = pvVfsOpen(Source)
-    lSourceSize = pvToInt32(pvVfsSeek(uSourceFile, 0, FILE_END))
-    If lSourceSize > 0 Then
-        ReDim sourceBuffer(0 To lSourceSize - 1)
-        pvVfsSeek uSourceFile, 0, FILE_BEGIN
-        pvVfsRead uSourceFile, VarPtr(sourceBuffer(0)), lSourceSize
-    Else
-        ReDim sourceBuffer(0 To -1) ' Tangani sumber kosong
-    End If
-    pvVfsClose uSourceFile
-
-    ' 2. Lakukan kompresi DEFLATE pada buffer sumber
+    ' 1. Validasi dan siapkan level kompresi
     Level = IIf(Level < acNoCompression, acNormalCompression, IIf(Level > acMaxCompression, acMaxCompression, Level))
+    
+    ' 2. Buka sumber menggunakan VFS
+    uSourceFile = pvVfsOpen(Source)
+    pvVfsSeek uSourceFile, 0, FILE_BEGIN
+    
+    ' 3. Buat GZ Header dengan metadata yang benar (RFC 1952)
+    gzHeader(0) = &H1F: gzHeader(1) = &H8B  ' Magic number
+    gzHeader(2) = 8                           ' CM: deflate
+    gzHeader(3) = 0                           ' FLG: no extras
+    ' gzHeader(4-7) = 0                       ' MTIME: not set
+    gzHeader(8) = IIf(Level >= acMaxCompression, 2, IIf(Level <= acFastestCompression, 4, 0)) ' XFL
+    gzHeader(9) = 11                          ' OS: NTFS/Windows
+    
+    ' 4. Siapkan output — file atau byte array
+    bToByteArray = IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte)
+    If bToByteArray Then
+        ReDim baGzOut(0 To LNG_IOBUF_SIZE - 1) As Byte
+        uDestFile = pvVfsCreate(baGzOut)
+    Else
+        uDestFile = pvVfsCreate(Destination)
+    End If
+    
+    ' 5. Tulis GZ Header
+    pvVfsWrite uDestFile, VarPtr(gzHeader(0)), 10
+    
+    ' 6. Inisialisasi DEFLATE compressor
     hCtx = CallWindowProc(m_uRtbl.CompressInit, VarPtr(m_uRtbl))
     If hCtx = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_INIT_COMPRESSOR
 
     uBuf.Greedy = (Level <= 4)
     uBuf.MaxMatch = At(Array(0, 2, 6, 12, 24, 8, 16, 32, 64, 1000), Level)
     uBuf.NiceLen = At(Array(0, 8, 10, 14, 24, 30, 65, 130, 200, 32768), Level)
-    uBuf.InBlock = pvArrPtr(sourceBuffer)
-    uBuf.InLen = lSourceSize
-    uBuf.Final = -1 ' True
     lCrc32 = -1
+    cTotalSize = 0
     
-    lResult = CallWindowProc(m_uRtbl.CompressBlock, hCtx, VarPtr(uBuf), VarPtr(lCrc32), Level)
-    If lResult = 0 Or uBuf.OutBlock = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_COMPRESSING
+    ' 7. Streaming compression — baca per-chunk, kompres, tulis langsung
+    ReDim baBuffer(0 To LNG_IOBUF_SIZE - 1) As Byte
+    ReDim baNext(0 To LNG_IOBUF_SIZE - 1) As Byte
     
-    lCrc32 = lCrc32 Xor -1
-    ReDim deflatedData(0 To uBuf.OutLen - 1)
-    CopyMemory deflatedData(0), ByVal uBuf.OutBlock, uBuf.OutLen
-
-    ' 3. Buat GZ Header dan Footer
-    gzHeader(0) = &H1F: gzHeader(1) = &H8B: gzHeader(2) = 8
-    Call CopyMemory(gzFooter(0), lCrc32, 4)
-    Call CopyMemory(gzFooter(4), lSourceSize, 4)
-    
-    ' 4. Gabungkan menjadi GZ buffer final
-    ReDim finalGzBuffer(0 To 10 + UBound(deflatedData) + 1 + 8 - 1)
-    CopyMemory finalGzBuffer(0), gzHeader(0), 10
-    CopyMemory finalGzBuffer(10), deflatedData(0), UBound(deflatedData) + 1
-    CopyMemory finalGzBuffer(10 + UBound(deflatedData) + 1), gzFooter(0), 8
-    
-    ' 5. Tulis ke tujuan menggunakan VFS
-    If IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte) Then
-        Destination = finalGzBuffer
+    lSize = pvVfsRead(uSourceFile, VarPtr(baNext(0)), LNG_IOBUF_SIZE)
+    If lSize > 0 Then
+        Do
+            Call CopyMemory(baBuffer(0), baNext(0), lSize)
+            uBuf.InBlock = VarPtr(baBuffer(0))
+            uBuf.InLen = lSize
+            lSize = pvVfsRead(uSourceFile, VarPtr(baNext(0)), LNG_IOBUF_SIZE)
+            uBuf.Final = (lSize = 0)
+            lResult = CallWindowProc(m_uRtbl.CompressBlock, hCtx, VarPtr(uBuf), VarPtr(lCrc32), CLng(Level))
+            If lResult = 0 Or uBuf.OutBlock = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_COMPRESSING
+            pvVfsWrite uDestFile, uBuf.OutBlock, uBuf.OutLen
+            Call CoTaskMemFree(uBuf.OutBlock)
+            uBuf.OutBlock = 0
+            cTotalSize = cTotalSize + uBuf.InLen
+        Loop While lSize <> 0
     Else
-        uDestFile = pvVfsCreate(Destination)
-        pvVfsWrite uDestFile, VarPtr(finalGzBuffer(0)), UBound(finalGzBuffer) + 1
-        pvVfsSetEof uDestFile, uDestFile.FileName
-        pvVfsClose uDestFile
+        ' Tangani sumber kosong — tulis blok DEFLATE final kosong
+        uBuf.InBlock = VarPtr(baBuffer(0))
+        uBuf.InLen = 0
+        uBuf.Final = -1
+        lResult = CallWindowProc(m_uRtbl.CompressBlock, hCtx, VarPtr(uBuf), VarPtr(lCrc32), CLng(Level))
+        If lResult = 0 Or uBuf.OutBlock = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_COMPRESSING
+        pvVfsWrite uDestFile, uBuf.OutBlock, uBuf.OutLen
+        Call CoTaskMemFree(uBuf.OutBlock)
+        uBuf.OutBlock = 0
+    End If
+    
+    ' 8. Tulis GZ Footer (CRC32 + ISIZE mod 2^32)
+    lCrc32 = lCrc32 Xor -1
+    Dim lISize As Long
+    lISize = pvToInt32(cTotalSize)  ' ISIZE = ukuran asli mod 2^32 (RFC 1952)
+    Call CopyMemory(gzFooter(0), lCrc32, 4)
+    Call CopyMemory(gzFooter(4), lISize, 4)
+    pvVfsWrite uDestFile, VarPtr(gzFooter(0)), 8
+    pvVfsSetEof uDestFile, uDestFile.FileName
+    
+    ' 9. Jika output ke byte array, assign hasilnya
+    If bToByteArray Then
+        Destination = baGzOut
     End If
 
     GzCompress = True
@@ -681,7 +713,9 @@ End Function
 
 Public Function GzDecompress(ByVal SourceGz As Variant, ByRef Destination As Variant) As Boolean
     ' Deskripsi:
-    ' Mendekompresi sumber GZ ke tujuan.
+    ' Mendekompresi sumber GZ ke tujuan menggunakan streaming (per-chunk).
+    ' Mendukung file GZ dengan flag FEXTRA, FNAME, FCOMMENT, FHCRC (RFC 1952).
+    ' Mendukung file .gz besar — tidak perlu memuat seluruh file ke memori.
     '
     ' Parameter:
     ' SourceGz (Variant): Sumber data GZ yang akan didekompres. Bisa berupa:
@@ -693,60 +727,138 @@ Public Function GzDecompress(ByVal SourceGz As Variant, ByRef Destination As Var
     '   - Byte Array: Variabel byte array kosong yang akan diisi dengan hasil dekompresi.
     '
     Const FUNC_NAME As String = "GzDecompress"
+    Const LNG_HEADER_BUF As Long = 4096
     Dim hCtx As Long, lResult As Long
     Dim uBuf As UcsZlibBuffersType
-    Dim gzBuffer() As Byte, decompressedData() As Byte
     Dim lCrc32_Stored As Long, lSize_Stored As Long, lCrc32_Calculated As Long
-    Dim lGzLen As Long
     Dim uSourceFile As UcsVfsFileType, uDestFile As UcsVfsFileType
+    Dim lDataOffset As Long
+    Dim bFlags As Byte
+    Dim lExtraLen As Integer
+    Dim baHeader() As Byte
+    Dim baBuffer() As Byte
+    Dim baFooter(0 To 7) As Byte
+    Dim cFileSize As Currency
+    Dim cDataSize As Currency
+    Dim cRead As Currency
+    Dim cTotalOut As Currency
+    Dim lSize As Long
+    Dim lHeaderLen As Long
+    Dim bToByteArray As Boolean
+    Dim baDecompOut() As Byte
     
     On Error GoTo EH
     m_sLastError = ""
     
-    ' 1. Buka dan baca seluruh sumber GZ menggunakan VFS
+    ' 1. Buka sumber GZ dan tentukan ukuran
     uSourceFile = pvVfsOpen(SourceGz)
-    lGzLen = pvToInt32(pvVfsSeek(uSourceFile, 0, FILE_END))
-    If lGzLen < 18 Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_TOO_SHORT
-    ReDim gzBuffer(0 To lGzLen - 1)
+    cFileSize = pvVfsSeek(uSourceFile, 0, FILE_END)
+    If cFileSize < 18 Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_TOO_SHORT
+    
+    ' 2. Baca header saja (maks 4096 byte, cukup untuk header GZ terpanjang)
+    lHeaderLen = LNG_HEADER_BUF
+    If cFileSize < lHeaderLen Then lHeaderLen = pvToInt32(cFileSize)
+    ReDim baHeader(0 To lHeaderLen - 1)
     pvVfsSeek uSourceFile, 0, FILE_BEGIN
-    pvVfsRead uSourceFile, VarPtr(gzBuffer(0)), lGzLen
-    pvVfsClose uSourceFile
-
-    ' 2. Validasi header GZ dan ambil footer
-    If gzBuffer(0) <> &H1F Or gzBuffer(1) <> &H8B Or gzBuffer(2) <> 8 Then
+    pvVfsRead uSourceFile, VarPtr(baHeader(0)), lHeaderLen
+    
+    ' 3. Validasi magic dan compression method
+    If baHeader(0) <> &H1F Or baHeader(1) <> &H8B Or baHeader(2) <> 8 Then
         Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_INVALID_HEADER
     End If
-    Call CopyMemory(lCrc32_Stored, gzBuffer(lGzLen - 8), 4)
-    Call CopyMemory(lSize_Stored, gzBuffer(lGzLen - 4), 4)
     
-    ' 3. Lakukan dekompresi DEFLATE
+    ' 4. Parse flag byte dan hitung offset data kompresi (RFC 1952)
+    bFlags = baHeader(3)
+    lDataOffset = 10
+    '--- FEXTRA (bit 2)
+    If (bFlags And &H4) <> 0 Then
+        If lDataOffset + 2 > lHeaderLen Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_INVALID_HEADER
+        Call CopyMemory(lExtraLen, baHeader(lDataOffset), 2)
+        lDataOffset = lDataOffset + 2 + lExtraLen
+    End If
+    '--- FNAME (bit 3): null-terminated string
+    If (bFlags And &H8) <> 0 Then
+        Do While lDataOffset < lHeaderLen
+            If baHeader(lDataOffset) = 0 Then
+                lDataOffset = lDataOffset + 1: Exit Do
+            End If
+            lDataOffset = lDataOffset + 1
+        Loop
+    End If
+    '--- FCOMMENT (bit 4): null-terminated string
+    If (bFlags And &H10) <> 0 Then
+        Do While lDataOffset < lHeaderLen
+            If baHeader(lDataOffset) = 0 Then
+                lDataOffset = lDataOffset + 1: Exit Do
+            End If
+            lDataOffset = lDataOffset + 1
+        Loop
+    End If
+    '--- FHCRC (bit 1): 2-byte CRC16
+    If (bFlags And &H2) <> 0 Then
+        lDataOffset = lDataOffset + 2
+    End If
+    If lDataOffset >= pvToInt32(cFileSize) - 8 Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_INVALID_HEADER
+    
+    ' 5. Baca footer (8 byte terakhir): CRC32 + ISIZE
+    pvVfsSeek uSourceFile, cFileSize - 8, FILE_BEGIN
+    pvVfsRead uSourceFile, VarPtr(baFooter(0)), 8
+    Call CopyMemory(lCrc32_Stored, baFooter(0), 4)
+    Call CopyMemory(lSize_Stored, baFooter(4), 4)
+    
+    ' 6. Hitung ukuran data kompresi
+    cDataSize = cFileSize - lDataOffset - 8
+    
+    ' 7. Siapkan output — file atau byte array
+    bToByteArray = IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte)
+    If bToByteArray Then
+        ReDim baDecompOut(0 To LNG_IOBUF_SIZE - 1) As Byte
+        uDestFile = pvVfsCreate(baDecompOut)
+    Else
+        uDestFile = pvVfsCreate(Destination)
+    End If
+    
+    ' 8. Inisialisasi INFLATE decompressor
     hCtx = CallWindowProc(m_uRtbl.DecompressInit, VarPtr(m_uRtbl))
     If hCtx = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_INIT_DECOMPRESSOR
     
-    uBuf.InBlock = VarPtr(gzBuffer(10))
-    uBuf.InLen = lGzLen - 18 ' Data kompresi berada di antara header (10 byte) dan footer (8 byte)
+    ' 9. Streaming decompression — baca per-chunk, dekompresi, tulis langsung
+    ReDim baBuffer(0 To LNG_IOBUF_SIZE - 1) As Byte
+    pvVfsSeek uSourceFile, CCur(lDataOffset), FILE_BEGIN
     lCrc32_Calculated = -1
+    cRead = 0
+    cTotalOut = 0
     
-    lResult = CallWindowProc(m_uRtbl.DecompressBlock, hCtx, VarPtr(uBuf), VarPtr(lCrc32_Calculated))
-    If lResult = 0 Or uBuf.OutBlock = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_DECOMPRESSING
+    Do While cRead < cDataSize
+        lSize = LNG_IOBUF_SIZE
+        If cDataSize - cRead < lSize Then
+            lSize = pvToInt32(cDataSize - cRead)
+        End If
+        lResult = pvVfsRead(uSourceFile, VarPtr(baBuffer(0)), lSize)
+        If lResult = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_DECOMPRESSING
+        cRead = cRead + lResult
+        
+        uBuf.InBlock = VarPtr(baBuffer(0))
+        uBuf.InLen = lResult
+        lResult = CallWindowProc(m_uRtbl.DecompressBlock, hCtx, VarPtr(uBuf), VarPtr(lCrc32_Calculated))
+        If lResult = 0 Or uBuf.OutBlock = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_DECOMPRESSING
+        
+        pvVfsWrite uDestFile, uBuf.OutBlock, uBuf.OutLen
+        cTotalOut = cTotalOut + uBuf.OutLen
+        Call CoTaskMemFree(uBuf.OutBlock)
+        uBuf.OutBlock = 0
+    Loop
     
-    ' 4. Salin hasil dekompresi ke buffer
-    ReDim decompressedData(0 To uBuf.OutLen - 1)
-    CopyMemory decompressedData(0), ByVal uBuf.OutBlock, uBuf.OutLen
-
-    ' 5. Validasi ukuran dan CRC32
-    If UBound(decompressedData) + 1 <> lSize_Stored Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_SIZE_MISMATCH
+    pvVfsSetEof uDestFile, uDestFile.FileName
+    
+    ' 10. Validasi CRC32 dan ISIZE (mod 2^32, sesuai RFC 1952)
     lCrc32_Calculated = lCrc32_Calculated Xor -1
     If lCrc32_Calculated <> lCrc32_Stored Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_CRC_MISMATCH
-
-    ' 6. Tulis ke tujuan menggunakan VFS
-    If IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte) Then
-        Destination = decompressedData
-    Else
-        uDestFile = pvVfsCreate(Destination)
-        pvVfsWrite uDestFile, VarPtr(decompressedData(0)), UBound(decompressedData) + 1
-        pvVfsSetEof uDestFile, uDestFile.FileName
-        pvVfsClose uDestFile
+    If pvToInt32(cTotalOut) <> lSize_Stored Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_SIZE_MISMATCH
+    
+    ' 11. Jika output ke byte array, assign hasilnya
+    If bToByteArray Then
+        Destination = baDecompOut
     End If
     
     GzDecompress = True
@@ -877,6 +989,10 @@ Public Function CompressArchive( _
         m_lCurrentFile = lIdx
         With m_uFiles(lIdx)
             lComprLevel = IIf(.Level >= 0, .Level, Level)
+            '--- OPTIM-3: Skip DEFLATE untuk file yang sudah terkompresi
+            If lComprLevel > 0 And pvIsPreCompressed(.FileName) Then
+                lComprLevel = 0
+            End If
             RaiseEvent BeforeCompress(lIdx, lComprLevel, bSkip, m_bCancel)
             If m_bCancel Then
                 m_sLastError = ERR_USER_CANCEL
@@ -3059,6 +3175,36 @@ QH:
 End Function
 
 #End If ' Not ImplUseShared
+
+'=========================================================================
+' Pre-compressed file detection
+'=========================================================================
+
+Private Function pvIsPreCompressed(sFileName As String) As Boolean
+    Dim lPos As Long
+    Dim sExt As String
+    
+    lPos = InStrRev(sFileName, ".")
+    If lPos = 0 Then Exit Function
+    sExt = LCase$(Mid$(sFileName, lPos + 1))
+    Select Case sExt
+    '--- Gambar terkompresi
+    Case "jpg", "jpeg", "png", "gif", "webp", "avif", "heic"
+        pvIsPreCompressed = True
+    '--- Video terkompresi
+    Case "mp4", "mkv", "avi", "mov", "wmv", "webm", "flv"
+        pvIsPreCompressed = True
+    '--- Audio terkompresi
+    Case "mp3", "aac", "ogg", "flac", "wma", "m4a", "opus"
+        pvIsPreCompressed = True
+    '--- Arsip terkompresi
+    Case "zip", "rar", "7z", "gz", "bz2", "xz", "zst", "cab", "lzma", "lz4"
+        pvIsPreCompressed = True
+    '--- Dokumen terkompresi (Office/PDF)
+    Case "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"
+        pvIsPreCompressed = True
+    End Select
+End Function
 
 '=========================================================================
 ' Base class events
