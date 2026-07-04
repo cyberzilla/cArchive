@@ -13,7 +13,7 @@ Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 '=========================================================================
 '
-'   cArchive v0.6.0-merged (c) 2025-2026
+'   cArchive v0.6.1-merged (c) 2025-2026
 '
 '   Kelas arsip serbaguna untuk VB6: ZIP + GZ + DEFLATE.
 '   Menggabungkan kemampuan cZipArchive dan cGZip dalam satu file.
@@ -24,7 +24,9 @@ Attribute VB_Exposed = False
 '   - Enkripsi ZIP: AES-128/192/256 dan ZipCrypto (WinZip-compatible)
 '   - Raw DEFLATE/INFLATE untuk penggunaan low-level
 '   - Embedded zlib1.dll: auto-extract ke %TEMP%, zero-dependency
-'   - Dual-mode: zlib (Dynamic Huffman) atau thunk (Fixed Huffman)
+'   - Tri-mode GZ: zlib (Dynamic Huffman), thunk (Fixed Huffman), libarchive
+'   - GzEngine property: pilih engine manual (geAuto/geThunk/geZlib)
+'   - Runtime-safe zlib via DispCallFunc (tidak crash jika DLL tidak ada)
 '   - VFS abstraction: input/output bisa file path atau byte array
 '   - Streaming: file besar diproses per-chunk tanpa memuat ke memori
 '
@@ -38,6 +40,12 @@ Attribute VB_Exposed = False
 '
 '   RIWAYAT VERSI:
 '
+'   0.6.1   05/07/2026  Runtime-safe zlib + GzEngine selector
+'                       - Declare Function -> DispCallFunc (tidak crash tanpa DLL)
+'                       - GzEngine property: geAuto, geThunk, geZlib
+'                       - GzEngineType enum
+'                       - ZlibDiagnostic() method
+'                       - Fix: Kill output file sebelum compress
 '   0.6.0   04/07/2026  Multi-format via archiveint.dll (Windows 11 23H2+)
 '                       - 12 format: ZIP, 7z, TAR, RAR, CAB, ISO, dll.
 '                       - Arc API: ArcOpen, ArcExtract, ArcCreate, ArcSave, dll.
@@ -64,7 +72,10 @@ Attribute VB_Exposed = False
 '   ThunkBuildDate  As String       [R]   Tanggal build thunk DEFLATE engine
 '   LastError       As String       [R]   Pesan error terakhir (kosong jika sukses)
 '   ZlibAvailable   As Boolean      [R]   True jika zlib1.dll berhasil di-load
-'   ZlibVersion     As String       [R]   Versi zlib (e.g., "1.3.1"), kosong jika tidak tersedia
+'   ZlibVersion     As String       [R]   Versi zlib (e.g., "1.2.3"), kosong jika tidak tersedia
+'   GzEngine        As GzEngineType [RW]  Engine untuk GzCompress:
+'                                         geAuto(0)=otomatis, geThunk(1)=Fixed Huffman,
+'                                         geZlib(2)=Dynamic Huffman
 '   FileCount       As Long         [R]   Jumlah file dalam arsip yang sedang dibuka
 '   FileInfo(idx, [col]) As Variant [R]   Metadata file ke-idx (nama, ukuran, CRC32, dll.)
 '                                         Kolom: ucsIdxFileName, ucsIdxSize, ucsIdxCrc32, dll.
@@ -79,7 +90,10 @@ Attribute VB_Exposed = False
 '       Destination:  String (file path) atau Byte() (output buffer)
 '       Level:        acNoCompression(0), acFastestCompression(1),
 '                     acNormalCompression(6), acMaxCompression(9)
-'       Otomatis menggunakan zlib jika tersedia (Dynamic Huffman).
+'       Engine ditentukan oleh GzEngine property (default: geAuto).
+'       geAuto: zlib jika tersedia, fallback thunk.
+'       geThunk: selalu Fixed Huffman (embedded, zero-dependency).
+'       geZlib: selalu Dynamic Huffman (zlib1.dll, kompresi 40% lebih baik).
 '
 '   GzDecompress(SourceGz, Destination) As Boolean
 '       Dekompresi file/data GZ.
@@ -230,6 +244,12 @@ Private Const MODULE_NAME As String = "cArchive"
 '=========================================================================
 ' Public enums
 '=========================================================================
+
+Public Enum GzEngineType
+    geAuto = 0          '--- Otomatis: zlib > thunk
+    geThunk = 1         '--- Force thunk (Fixed Huffman)
+    geZlib = 2          '--- Force zlib (Dynamic Huffman)
+End Enum
 
 Public Enum ArchiveCompressionLevel
     acNoCompression = 0         ' Tanpa kompresi (Store)
@@ -540,19 +560,13 @@ Private Const STR_ZLIB_COUNT As Long = 20
 '=========================================================================
 
 '--- zlib1.dll API (opsional, untuk kompresi yang lebih baik)
-Private Declare Function zlib_compress2 Lib "zlib1.dll" Alias "compress2" (ByVal dest As Long, destLen As Long, ByVal Source As Long, ByVal sourceLen As Long, ByVal Level As Long) As Long
-Private Declare Function zlib_uncompress Lib "zlib1.dll" Alias "uncompress" (ByVal dest As Long, destLen As Long, ByVal Source As Long, ByVal sourceLen As Long) As Long
-Private Declare Function zlib_deflateInit2 Lib "zlib1.dll" Alias "deflateInit2_" (ByRef strm As z_stream, ByVal Level As Long, ByVal Method As Long, ByVal windowBits As Long, ByVal memLevel As Long, ByVal strategy As Long, ByVal version As String, ByVal stream_size As Long) As Long
-Private Declare Function zlib_deflate Lib "zlib1.dll" Alias "deflate" (ByRef strm As z_stream, ByVal flush As Long) As Long
-Private Declare Function zlib_deflateEnd Lib "zlib1.dll" Alias "deflateEnd" (ByRef strm As z_stream) As Long
-Private Declare Function zlib_inflateInit2 Lib "zlib1.dll" Alias "inflateInit2_" (ByRef strm As z_stream, ByVal windowBits As Long, ByVal version As String, ByVal stream_size As Long) As Long
-Private Declare Function zlib_inflate Lib "zlib1.dll" Alias "inflate" (ByRef strm As z_stream, ByVal flush As Long) As Long
-Private Declare Function zlib_inflateEnd Lib "zlib1.dll" Alias "inflateEnd" (ByRef strm As z_stream) As Long
-Private Declare Function zlib_crc32 Lib "zlib1.dll" Alias "crc32" (ByVal crc As Long, ByVal buf As Long, ByVal Len As Long) As Long
-Private Declare Function zlib_zlibVersion Lib "zlib1.dll" Alias "zlibVersion" () As Long
-Private Declare Function zlib_compressBound Lib "zlib1.dll" Alias "compressBound" (ByVal sourceLen As Long) As Long
+'--- zlib function pointers (resolved at runtime via GetProcAddress)
+'--- Ini menggantikan Declare Function ... Lib "zlib1.dll" agar tidak crash jika DLL tidak ada
+Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal cc As Long, ByVal vtReturn As Long, ByVal cActuals As Long, prgvt As Any, prgpvarg As Any, pvargResult As Variant) As Long
+Private Const CC_CDECL As Long = 1
 Private Declare Function LoadLibrary Lib "kernel32" Alias "LoadLibraryW" (ByVal lpLibFileName As Long) As Long
 Private Declare Function FreeLibrary Lib "kernel32" (ByVal hLibModule As Long) As Long
+Private Declare Function SetDllDirectoryW Lib "kernel32" (ByVal lpPathName As Long) As Long
 Private Declare Function lstrlenA Lib "kernel32" (ByVal lpString As Long) As Long
 Private Declare Function lstrlenW Lib "kernel32" (ByVal lpString As Long) As Long
 
@@ -564,14 +578,14 @@ Private Declare Function arc_read_support_format_all Lib "archiveint.dll" Alias 
 Private Declare Function arc_read_support_filter_all Lib "archiveint.dll" Alias "archive_read_support_filter_all" (ByVal h As Long) As Long
 Private Declare Function arc_read_open_filename Lib "archiveint.dll" Alias "archive_read_open_filename" (ByVal h As Long, ByVal fn As Long, ByVal blockSize As Long) As Long
 Private Declare Function arc_read_next_header Lib "archiveint.dll" Alias "archive_read_next_header" (ByVal h As Long, hEntry As Long) As Long
-Private Declare Function arc_read_data Lib "archiveint.dll" Alias "archive_read_data" (ByVal h As Long, ByVal pData As Long, ByVal dataSize As Long) As Long
+Private Declare Function arc_read_data Lib "archiveint.dll" Alias "archive_read_data" (ByVal h As Long, ByVal pData As Long, ByVal DataSize As Long) As Long
 Private Declare Function arc_read_add_passphrase Lib "archiveint.dll" Alias "archive_read_add_passphrase" (ByVal h As Long, ByVal pw As Long) As Long
 Private Declare Function arc_write_new Lib "archiveint.dll" Alias "archive_write_new" () As Long
 Private Declare Function arc_write_free Lib "archiveint.dll" Alias "archive_write_free" (ByVal h As Long) As Long
 Private Declare Function arc_write_close Lib "archiveint.dll" Alias "archive_write_close" (ByVal h As Long) As Long
 Private Declare Function arc_write_open_filename Lib "archiveint.dll" Alias "archive_write_open_filename" (ByVal h As Long, ByVal fn As Long) As Long
 Private Declare Function arc_write_header Lib "archiveint.dll" Alias "archive_write_header" (ByVal h As Long, ByVal entry As Long) As Long
-Private Declare Function arc_write_data Lib "archiveint.dll" Alias "archive_write_data" (ByVal h As Long, ByVal pData As Long, ByVal dataSize As Long) As Long
+Private Declare Function arc_write_data Lib "archiveint.dll" Alias "archive_write_data" (ByVal h As Long, ByVal pData As Long, ByVal DataSize As Long) As Long
 Private Declare Function arc_write_finish_entry Lib "archiveint.dll" Alias "archive_write_finish_entry" (ByVal h As Long) As Long
 Private Declare Function arc_write_set_format_zip Lib "archiveint.dll" Alias "archive_write_set_format_zip" (ByVal h As Long) As Long
 Private Declare Function arc_write_set_format_7zip Lib "archiveint.dll" Alias "archive_write_set_format_7zip" (ByVal h As Long) As Long
@@ -676,7 +690,7 @@ Private Declare Function VariantTimeToSystemTime Lib "oleaut32" (ByVal vTime As 
 Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
 Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleW" (ByVal lpModuleName As Long) As Long
 Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
-Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcW" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, Optional ByVal Msg As Long, Optional ByVal wParam As Long, Optional ByVal lParam As Long) As Long
+Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcW" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, Optional ByVal msg As Long, Optional ByVal wParam As Long, Optional ByVal lParam As Long) As Long
 Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cbMultiByte As Long, lpWideCharStr As Any, ByVal cchWideChar As Long) As Long
 Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, ByVal lpMultiByteStr As Long, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
@@ -821,7 +835,19 @@ Private m_uFiles()                  As UcsFileInfo
 Private m_lCurrentFile              As Long
 Private m_lCodePage                 As Long
 Private m_hZlib                     As Long     '--- handle ke zlib1.dll (0 jika tidak tersedia)
+Private m_eGzEngine             As GzEngineType
 Private m_bZlibChecked              As Boolean  '--- flag apakah sudah dicek
+Private m_pfnDeflateInit2           As Long     '--- zlib deflateInit2_
+Private m_pfnDeflate                As Long     '--- zlib deflate
+Private m_pfnDeflateEnd             As Long     '--- zlib deflateEnd
+Private m_pfnInflateInit2           As Long     '--- zlib inflateInit2_
+Private m_pfnInflate                As Long     '--- zlib inflate
+Private m_pfnInflateEnd             As Long     '--- zlib inflateEnd
+Private m_pfnCrc32                  As Long     '--- zlib crc32
+Private m_pfnZlibVersion            As Long     '--- zlib zlibVersion
+Private m_pfnCompress2              As Long     '--- zlib compress2
+Private m_pfnUncompress             As Long     '--- zlib uncompress
+Private m_pfnCompressBound          As Long     '--- zlib compressBound
 Private m_hArcInt                   As Long     '--- handle ke archiveint.dll
 Private m_bArcChecked               As Boolean  '--- flag apakah sudah dicek
 Private m_hArcRead                  As Long     '--- handle read archive (ArcOpen)
@@ -1058,7 +1084,7 @@ End Type
 '=========================================================================
 
 Public Property Get SemVersion() As String
-    SemVersion = "0.6.0-merged"
+    SemVersion = "0.6.1-merged"
 End Property
 
 Public Property Get ThunkBuildDate() As String
@@ -1088,6 +1114,59 @@ Public Property Get ZlibVersion() As String
             End If
         End If
     End If
+End Property
+
+Public Function ZlibDiagnostic() As String
+    '--- Test zlib functions via DispCallFunc untuk diagnostik
+    Dim s As String
+    If Not pvZlibAvailable() Then
+        ZlibDiagnostic = "Zlib not available"
+        Exit Function
+    End If
+    
+    On Error Resume Next
+    
+    '--- Test 1: compressBound(1000) - harus ~1013
+    Dim lCBound As Long
+    lCBound = zlib_compressBound(1000)
+    s = "compressBound(1000)=" & lCBound & vbCrLf
+    If Err.Number <> 0 Then s = s & "ERR: " & Err.Description & vbCrLf: Err.Clear
+    
+    '--- Test 2: compress2 - kompres 1000 byte "A" 
+    Dim baSrc(0 To 999) As Byte
+    Dim i As Long
+    For i = 0 To 999: baSrc(i) = 65: Next
+    
+    Dim lDestLen As Long
+    If lCBound > 0 Then lDestLen = lCBound Else lDestLen = 2000
+    Dim baDest() As Byte
+    ReDim baDest(0 To lDestLen - 1)
+    
+    Dim lRet As Long
+    lRet = zlib_compress2(VarPtr(baDest(0)), lDestLen, VarPtr(baSrc(0)), 1000, 9)
+    s = s & "compress2 ret=" & lRet & ", outLen=" & lDestLen & vbCrLf
+    If Err.Number <> 0 Then s = s & "ERR: " & Err.Description & vbCrLf: Err.Clear
+    
+    '--- Test 3: crc32
+    Dim lCrc As Long
+    lCrc = zlib_crc32(0, VarPtr(baSrc(0)), 1000)
+    s = s & "crc32(1000 A)=" & lCrc & vbCrLf
+    If Err.Number <> 0 Then s = s & "ERR: " & Err.Description & vbCrLf: Err.Clear
+    
+    '--- Function pointers
+    s = s & "pfnDeflateInit2=" & m_pfnDeflateInit2 & vbCrLf
+    s = s & "pfnDeflate=" & m_pfnDeflate & vbCrLf
+    s = s & "pfnCrc32=" & m_pfnCrc32 & vbCrLf
+    
+    ZlibDiagnostic = s
+End Function
+
+Public Property Get GzEngine() As GzEngineType
+    GzEngine = m_eGzEngine
+End Property
+
+Public Property Let GzEngine(ByVal eEngine As GzEngineType)
+    m_eGzEngine = eEngine
 End Property
 
 Public Property Get FileCount() As Long
@@ -1177,8 +1256,15 @@ Public Function GzCompress(ByVal Source As Variant, ByRef Destination As Variant
     On Error GoTo EH
     pvSetError
     
-    ' 0. Jika zlib1.dll tersedia, gunakan jalur zlib (Dynamic Huffman)
-    If pvZlibAvailable() Then
+    ' 0. Pilih engine berdasarkan GzEngine property
+    Dim bUseZlib As Boolean
+    Select Case m_eGzEngine
+        Case geZlib:  bUseZlib = pvZlibAvailable()   '--- Force zlib
+        Case geThunk: bUseZlib = False                '--- Force thunk
+        Case Else:    bUseZlib = pvZlibAvailable()    '--- geAuto
+    End Select
+    
+    If bUseZlib Then
         GzCompress = pvGzCompressZlib(Source, Destination, Level)
         Exit Function
     End If
@@ -1311,8 +1397,13 @@ Private Function pvGzCompressZlib(ByVal Source As Variant, ByRef Destination As 
     gzHeader(8) = IIf(Level >= acMaxCompression, 2, IIf(Level <= acFastestCompression, 4, 0))
     gzHeader(9) = 11                          ' OS: NTFS/Windows
     
-    ' 4. Siapkan output
+    ' 4. Siapkan output (hapus file lama agar tidak ada sisa data)
     bToByteArray = IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte)
+    If Not bToByteArray Then
+        On Error Resume Next
+        If Dir$(CStr(Destination)) <> "" Then Kill CStr(Destination)
+        On Error GoTo EH
+    End If
     If bToByteArray Then
         ReDim baGzOut(0 To LNG_IOBUF_SIZE - 1) As Byte
         uDestFile = pvVfsCreate(baGzOut)
@@ -4658,52 +4749,191 @@ Private Sub pvMkDirRecursive(ByVal sPath As String)
 End Sub
 
 Private Function pvZlibAvailable() As Boolean
-    '--- Cek apakah zlib1.dll tersedia. Hasilnya di-cache.
-    '--- Urutan: 1) Cek DLL di system/app path, 2) Extract dari embedded Base64
+    '--- Cek dan load zlib1.dll secara dinamis (GetProcAddress, tanpa Declare)
     If Not m_bZlibChecked Then
         m_bZlibChecked = True
-        '--- 1. Coba load dari system/app path dulu
-        On Error Resume Next
+        '--- 1. Coba dari system/app path standar
         m_hZlib = LoadLibrary(StrPtr("zlib1.dll"))
-        On Error GoTo 0
-        '--- 2. Jika tidak ditemukan, extract dari embedded data
+        '--- 2. Coba dari App.Path
+        If m_hZlib = 0 Then
+            On Error Resume Next
+            Dim sAppDir As String
+            sAppDir = App.Path
+            If LenB(sAppDir) <> 0 Then
+                SetDllDirectoryW StrPtr(sAppDir)
+                m_hZlib = LoadLibrary(StrPtr("zlib1.dll"))
+                SetDllDirectoryW 0
+            End If
+            On Error GoTo 0
+        End If
+        '--- 3. Extract dari embedded Base64
         If m_hZlib = 0 Then
             Dim sTempPath As String
             sTempPath = pvExtractEmbeddedZlib()
             If LenB(sTempPath) <> 0 Then
-                On Error Resume Next
-                m_hZlib = LoadLibrary(StrPtr(sTempPath))
-                On Error GoTo 0
+                Dim sTempDir As String
+                sTempDir = Environ$("TEMP")
+                SetDllDirectoryW StrPtr(sTempDir)
+                m_hZlib = LoadLibrary(StrPtr("zlib1.dll"))
+                SetDllDirectoryW 0
             End If
         End If
-        '--- 3. Verifikasi DLL bisa dipanggil
+        '--- 4. Resolve function pointers via GetProcAddress
         If m_hZlib <> 0 Then
-            On Error Resume Next
-            Dim lPtr As Long
-            lPtr = zlib_zlibVersion()
-            If Err.Number <> 0 Or lPtr = 0 Then
+            m_pfnDeflateInit2 = GetProcAddress(m_hZlib, "deflateInit2_")
+            m_pfnDeflate = GetProcAddress(m_hZlib, "deflate")
+            m_pfnDeflateEnd = GetProcAddress(m_hZlib, "deflateEnd")
+            m_pfnInflateInit2 = GetProcAddress(m_hZlib, "inflateInit2_")
+            m_pfnInflate = GetProcAddress(m_hZlib, "inflate")
+            m_pfnInflateEnd = GetProcAddress(m_hZlib, "inflateEnd")
+            m_pfnCrc32 = GetProcAddress(m_hZlib, "crc32")
+            m_pfnZlibVersion = GetProcAddress(m_hZlib, "zlibVersion")
+            m_pfnCompress2 = GetProcAddress(m_hZlib, "compress2")
+            m_pfnUncompress = GetProcAddress(m_hZlib, "uncompress")
+            m_pfnCompressBound = GetProcAddress(m_hZlib, "compressBound")
+            '--- Verifikasi: semua fungsi harus ditemukan
+            If m_pfnDeflateInit2 = 0 Or m_pfnDeflate = 0 Or m_pfnCrc32 = 0 Or m_pfnZlibVersion = 0 Then
                 FreeLibrary m_hZlib
                 m_hZlib = 0
             End If
-            On Error GoTo 0
         End If
     End If
     pvZlibAvailable = (m_hZlib <> 0)
 End Function
 
+'--- Zlib wrapper: panggil fungsi zlib via DispCallFunc (cdecl, runtime-safe)
+'--- prgpvarg harus array of VarPtr(Variant), bukan VarPtr(rawValue)
+
+Private Function zlib_zlibVersion() As Long
+    Dim vRet As Variant
+    DispCallFunc 0, m_pfnZlibVersion, CC_CDECL, vbLong, 0, ByVal 0&, ByVal 0&, vRet
+    zlib_zlibVersion = CLng(vRet)
+End Function
+
+Private Function zlib_deflateInit2(strm As z_stream, ByVal Level As Long, ByVal Method As Long, ByVal windowBits As Long, ByVal memLevel As Long, ByVal strategy As Long, ByVal sVersion As String, ByVal stream_size As Long) As Long
+    Dim vRet As Variant
+    Dim baVer() As Byte
+    baVer = StrConv(sVersion, vbFromUnicode)
+    ReDim Preserve baVer(0 To UBound(baVer) + 1)
+    baVer(UBound(baVer)) = 0
+    Dim lVerPtr As Long: lVerPtr = VarPtr(baVer(0))
+    Dim lStrmPtr As Long: lStrmPtr = VarPtr(strm)
+    Dim vArgs(0 To 7) As Variant
+    vArgs(0) = lStrmPtr: vArgs(1) = Level: vArgs(2) = Method: vArgs(3) = windowBits
+    vArgs(4) = memLevel: vArgs(5) = strategy: vArgs(6) = lVerPtr: vArgs(7) = stream_size
+    Dim vt(0 To 7) As Integer
+    vt(0) = vbLong: vt(1) = vbLong: vt(2) = vbLong: vt(3) = vbLong
+    vt(4) = vbLong: vt(5) = vbLong: vt(6) = vbLong: vt(7) = vbLong
+    Dim pp(0 To 7) As Long
+    pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1)): pp(2) = VarPtr(vArgs(2)): pp(3) = VarPtr(vArgs(3))
+    pp(4) = VarPtr(vArgs(4)): pp(5) = VarPtr(vArgs(5)): pp(6) = VarPtr(vArgs(6)): pp(7) = VarPtr(vArgs(7))
+    DispCallFunc 0, m_pfnDeflateInit2, CC_CDECL, vbLong, 8, vt(0), pp(0), vRet
+    zlib_deflateInit2 = CLng(vRet)
+End Function
+
+Private Function zlib_deflate(strm As z_stream, ByVal flush As Long) As Long
+    Dim vRet As Variant
+    Dim lStrmPtr As Long: lStrmPtr = VarPtr(strm)
+    Dim vArgs(0 To 1) As Variant: vArgs(0) = lStrmPtr: vArgs(1) = flush
+    Dim vt(0 To 1) As Integer: vt(0) = vbLong: vt(1) = vbLong
+    Dim pp(0 To 1) As Long: pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1))
+    DispCallFunc 0, m_pfnDeflate, CC_CDECL, vbLong, 2, vt(0), pp(0), vRet
+    zlib_deflate = CLng(vRet)
+End Function
+
+Private Function zlib_deflateEnd(strm As z_stream) As Long
+    Dim vRet As Variant
+    Dim lStrmPtr As Long: lStrmPtr = VarPtr(strm)
+    Dim vArgs(0) As Variant: vArgs(0) = lStrmPtr
+    Dim vt(0) As Integer: vt(0) = vbLong
+    Dim pp(0) As Long: pp(0) = VarPtr(vArgs(0))
+    DispCallFunc 0, m_pfnDeflateEnd, CC_CDECL, vbLong, 1, vt(0), pp(0), vRet
+    zlib_deflateEnd = CLng(vRet)
+End Function
+
+Private Function zlib_inflateInit2(strm As z_stream, ByVal windowBits As Long, ByVal sVersion As String, ByVal stream_size As Long) As Long
+    Dim vRet As Variant
+    Dim baVer() As Byte
+    baVer = StrConv(sVersion, vbFromUnicode)
+    ReDim Preserve baVer(0 To UBound(baVer) + 1)
+    baVer(UBound(baVer)) = 0
+    Dim lVerPtr As Long: lVerPtr = VarPtr(baVer(0))
+    Dim lStrmPtr As Long: lStrmPtr = VarPtr(strm)
+    Dim vArgs(0 To 3) As Variant: vArgs(0) = lStrmPtr: vArgs(1) = windowBits: vArgs(2) = lVerPtr: vArgs(3) = stream_size
+    Dim vt(0 To 3) As Integer: vt(0) = vbLong: vt(1) = vbLong: vt(2) = vbLong: vt(3) = vbLong
+    Dim pp(0 To 3) As Long: pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1)): pp(2) = VarPtr(vArgs(2)): pp(3) = VarPtr(vArgs(3))
+    DispCallFunc 0, m_pfnInflateInit2, CC_CDECL, vbLong, 4, vt(0), pp(0), vRet
+    zlib_inflateInit2 = CLng(vRet)
+End Function
+
+Private Function zlib_inflate(strm As z_stream, ByVal flush As Long) As Long
+    Dim vRet As Variant
+    Dim lStrmPtr As Long: lStrmPtr = VarPtr(strm)
+    Dim vArgs(0 To 1) As Variant: vArgs(0) = lStrmPtr: vArgs(1) = flush
+    Dim vt(0 To 1) As Integer: vt(0) = vbLong: vt(1) = vbLong
+    Dim pp(0 To 1) As Long: pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1))
+    DispCallFunc 0, m_pfnInflate, CC_CDECL, vbLong, 2, vt(0), pp(0), vRet
+    zlib_inflate = CLng(vRet)
+End Function
+
+Private Function zlib_inflateEnd(strm As z_stream) As Long
+    Dim vRet As Variant
+    Dim lStrmPtr As Long: lStrmPtr = VarPtr(strm)
+    Dim vArgs(0) As Variant: vArgs(0) = lStrmPtr
+    Dim vt(0) As Integer: vt(0) = vbLong
+    Dim pp(0) As Long: pp(0) = VarPtr(vArgs(0))
+    DispCallFunc 0, m_pfnInflateEnd, CC_CDECL, vbLong, 1, vt(0), pp(0), vRet
+    zlib_inflateEnd = CLng(vRet)
+End Function
+
+Private Function zlib_crc32(ByVal crc As Long, ByVal buf As Long, ByVal nLen As Long) As Long
+    Dim vRet As Variant
+    Dim vArgs(0 To 2) As Variant: vArgs(0) = crc: vArgs(1) = buf: vArgs(2) = nLen
+    Dim vt(0 To 2) As Integer: vt(0) = vbLong: vt(1) = vbLong: vt(2) = vbLong
+    Dim pp(0 To 2) As Long: pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1)): pp(2) = VarPtr(vArgs(2))
+    DispCallFunc 0, m_pfnCrc32, CC_CDECL, vbLong, 3, vt(0), pp(0), vRet
+    zlib_crc32 = CLng(vRet)
+End Function
+
+Private Function zlib_compress2(ByVal dest As Long, destLen As Long, ByVal Source As Long, ByVal sourceLen As Long, ByVal Level As Long) As Long
+    Dim vRet As Variant
+    Dim vArgs(0 To 4) As Variant: vArgs(0) = dest: vArgs(1) = VarPtr(destLen): vArgs(2) = Source: vArgs(3) = sourceLen: vArgs(4) = Level
+    Dim vt(0 To 4) As Integer: vt(0) = vbLong: vt(1) = vbLong: vt(2) = vbLong: vt(3) = vbLong: vt(4) = vbLong
+    Dim pp(0 To 4) As Long: pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1)): pp(2) = VarPtr(vArgs(2)): pp(3) = VarPtr(vArgs(3)): pp(4) = VarPtr(vArgs(4))
+    DispCallFunc 0, m_pfnCompress2, CC_CDECL, vbLong, 5, vt(0), pp(0), vRet
+    zlib_compress2 = CLng(vRet)
+End Function
+
+Private Function zlib_uncompress(ByVal dest As Long, destLen As Long, ByVal Source As Long, ByVal sourceLen As Long) As Long
+    Dim vRet As Variant
+    Dim vArgs(0 To 3) As Variant: vArgs(0) = dest: vArgs(1) = VarPtr(destLen): vArgs(2) = Source: vArgs(3) = sourceLen
+    Dim vt(0 To 3) As Integer: vt(0) = vbLong: vt(1) = vbLong: vt(2) = vbLong: vt(3) = vbLong
+    Dim pp(0 To 3) As Long: pp(0) = VarPtr(vArgs(0)): pp(1) = VarPtr(vArgs(1)): pp(2) = VarPtr(vArgs(2)): pp(3) = VarPtr(vArgs(3))
+    DispCallFunc 0, m_pfnUncompress, CC_CDECL, vbLong, 4, vt(0), pp(0), vRet
+    zlib_uncompress = CLng(vRet)
+End Function
+
+Private Function zlib_compressBound(ByVal sourceLen As Long) As Long
+    Dim vRet As Variant
+    Dim vArgs(0) As Variant: vArgs(0) = sourceLen
+    Dim vt(0) As Integer: vt(0) = vbLong
+    Dim pp(0) As Long: pp(0) = VarPtr(vArgs(0))
+    DispCallFunc 0, m_pfnCompressBound, CC_CDECL, vbLong, 1, vt(0), pp(0), vRet
+    zlib_compressBound = CLng(vRet)
+End Function
+
 Private Function pvExtractEmbeddedZlib() As String
-    '--- Extract embedded zlib1.dll ke %TEMP%\cArchive_zlib1.dll
+    '--- Extract embedded zlib1.dll ke %TEMP%\zlib1.dll
     '--- Jika file sudah ada dan ukurannya benar, skip extraction
     Const LNG_ZLIB_SIZE As Long = 75264
     Dim sDllPath As String
-    Dim sBase64 As String
     Dim baData() As Byte
     Dim iFile As Integer
     
     On Error GoTo EH
     
     '--- Tentukan path
-    sDllPath = Environ$("TEMP") & "\cArchive_zlib1.dll"
+    sDllPath = Environ$("TEMP") & "\zlib1.dll"
     
     '--- Cek apakah sudah ada dan ukurannya benar
     If Dir$(sDllPath) <> "" Then
@@ -4711,20 +4941,25 @@ Private Function pvExtractEmbeddedZlib() As String
             pvExtractEmbeddedZlib = sDllPath
             Exit Function
         End If
-        '--- Ukuran berbeda, hapus file lama
         On Error Resume Next
         Kill sDllPath
         On Error GoTo EH
     End If
     
-    '--- Gabungkan semua konstanta Base64
-    sBase64 = STR_ZLIB_1 & STR_ZLIB_2 & STR_ZLIB_3 & STR_ZLIB_4 & STR_ZLIB_5 & _
-              STR_ZLIB_6 & STR_ZLIB_7 & STR_ZLIB_8 & STR_ZLIB_9 & STR_ZLIB_10 & _
-              STR_ZLIB_11 & STR_ZLIB_12 & STR_ZLIB_13 & STR_ZLIB_14 & STR_ZLIB_15 & _
-              STR_ZLIB_16 & STR_ZLIB_17 & STR_ZLIB_18 & STR_ZLIB_19 & STR_ZLIB_20
+    '--- Gabungkan Base64 dalam beberapa langkah
+    Dim s1 As String, s2 As String, s3 As String, s4 As String
+    s1 = STR_ZLIB_1 & STR_ZLIB_2 & STR_ZLIB_3 & STR_ZLIB_4 & STR_ZLIB_5
+    s2 = STR_ZLIB_6 & STR_ZLIB_7 & STR_ZLIB_8 & STR_ZLIB_9 & STR_ZLIB_10
+    s3 = STR_ZLIB_11 & STR_ZLIB_12 & STR_ZLIB_13 & STR_ZLIB_14 & STR_ZLIB_15
+    s4 = STR_ZLIB_16 & STR_ZLIB_17 & STR_ZLIB_18 & STR_ZLIB_19 & STR_ZLIB_20
+    
+    Dim sBase64 As String
+    sBase64 = s1 & s2 & s3 & s4
+    s1 = "": s2 = "": s3 = "": s4 = ""
     
     '--- Decode Base64
     baData = FromBase64Array(sBase64)
+    sBase64 = ""
     If UBound(baData) + 1 <> LNG_ZLIB_SIZE Then GoTo EH
     
     '--- Tulis ke file
