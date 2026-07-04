@@ -13,12 +13,207 @@ Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 '=========================================================================
 '
-' cArchive (c) 2025
+'   cArchive v0.6.0-merged (c) 2025-2026
 '
-' Kelas gabungan dari cZipArchive dan cGZip.
-' Mampu mengelola arsip ZIP dan membuat/membaca file GZ.
+'   Kelas arsip serbaguna untuk VB6: ZIP + GZ + DEFLATE.
+'   Menggabungkan kemampuan cZipArchive dan cGZip dalam satu file.
 '
-' Berdasarkan cZipArchive (c) 2017-2022 by wqweto@gmail.com
+'   Fitur Utama:
+'   - Kompresi/dekompresi ZIP (termasuk ZIP64 untuk file >4GB)
+'   - Kompresi/dekompresi GZ (RFC 1952, streaming per-chunk)
+'   - Enkripsi ZIP: AES-128/192/256 dan ZipCrypto (WinZip-compatible)
+'   - Raw DEFLATE/INFLATE untuk penggunaan low-level
+'   - Embedded zlib1.dll: auto-extract ke %TEMP%, zero-dependency
+'   - Dual-mode: zlib (Dynamic Huffman) atau thunk (Fixed Huffman)
+'   - VFS abstraction: input/output bisa file path atau byte array
+'   - Streaming: file besar diproses per-chunk tanpa memuat ke memori
+'
+'   Berdasarkan cZipArchive (c) 2017-2022 by wqweto@gmail.com
+'   DEFLATE thunk dari PuTTY sshzlib oleh Simon Tatham
+'   zlib1.dll dari zlib library (https://zlib.net/)
+'
+'   LICENSE: MIT
+'
+'=========================================================================
+'
+'   RIWAYAT VERSI:
+'
+'   0.6.0   04/07/2026  Multi-format via archiveint.dll (Windows 11 23H2+)
+'                       - 12 format: ZIP, 7z, TAR, RAR, CAB, ISO, dll.
+'                       - Arc API: ArcOpen, ArcExtract, ArcCreate, ArcSave, dll.
+'                       - Auto-detect format dari ekstensi
+'                       - ArcAvailable, ArcVersion properties
+'   0.5.0   04/07/2026  Embedded zlib1.dll (Dynamic Huffman, zero-dependency)
+'                       - Auto-extract zlib1.dll ke %TEMP%
+'                       - pvGzCompressZlib: streaming deflate via zlib
+'                       - pvGzDecompressZlib: streaming inflate via zlib
+'                       - Properties: ZlibAvailable, ZlibVersion
+'                       - czStorage: default acMaxCompression (level 9)
+'   0.4.0   04/07/2026  Merge cGZip, streaming GZ, RFC 1952 full flags
+'   0.3.0   2025        ZIP64 support, AES encryption
+'   0.2.0   2022        ZIP crypto (ZipCrypto + AES)
+'   0.1.0   2018        Initial cZipArchive (wqweto)
+'
+'=========================================================================
+'
+'   API REFERENCE:
+'
+'   ---- Properties ----
+'
+'   SemVersion      As String       [R]   Versi semantik class (e.g., "0.5.0-merged")
+'   ThunkBuildDate  As String       [R]   Tanggal build thunk DEFLATE engine
+'   LastError       As String       [R]   Pesan error terakhir (kosong jika sukses)
+'   ZlibAvailable   As Boolean      [R]   True jika zlib1.dll berhasil di-load
+'   ZlibVersion     As String       [R]   Versi zlib (e.g., "1.3.1"), kosong jika tidak tersedia
+'   FileCount       As Long         [R]   Jumlah file dalam arsip yang sedang dibuka
+'   FileInfo(idx, [col]) As Variant [R]   Metadata file ke-idx (nama, ukuran, CRC32, dll.)
+'                                         Kolom: ucsIdxFileName, ucsIdxSize, ucsIdxCrc32, dll.
+'   CodePage        As Long         [RW]  Code page untuk konversi nama file (default: OEM)
+'   Comment         As String       [R]   Komentar arsip ZIP (jika ada)
+'
+'   ---- GZ Methods ----
+'
+'   GzCompress(Source, Destination, [Level]) As Boolean
+'       Kompresi data ke format GZ.
+'       Source:       String (file path) atau Byte() (data di memori)
+'       Destination:  String (file path) atau Byte() (output buffer)
+'       Level:        acNoCompression(0), acFastestCompression(1),
+'                     acNormalCompression(6), acMaxCompression(9)
+'       Otomatis menggunakan zlib jika tersedia (Dynamic Huffman).
+'
+'   GzDecompress(SourceGz, Destination) As Boolean
+'       Dekompresi file/data GZ.
+'       SourceGz:     String (file path) atau Byte() (data GZ)
+'       Destination:  String (file path) atau Byte() (output buffer)
+'       Mendukung semua flag GZ: FEXTRA, FNAME, FCOMMENT, FHCRC.
+'
+'   ---- ZIP Methods ----
+'
+'   AddFile(File, [Name], [Comment], [Password], [EncrStrength], [Level]) As Boolean
+'       Tambahkan file ke antrian kompresi ZIP.
+'       File:          String (file path) atau Byte() (data)
+'       Name:          Nama file di dalam arsip (opsional, auto-detect)
+'       Password:      Password untuk enkripsi (opsional)
+'       EncrStrength:  1=AES-128, 2=AES-192, 3=AES-256
+'       Level:         0-9 (-1 = default)
+'
+'   AddFromFolder(Folder, [Spec], [Recursive]) As Boolean
+'       Tambahkan semua file dari folder ke antrian.
+'       Folder:     Path folder sumber
+'       Spec:       Filter wildcard (e.g., "*.txt")
+'       Recursive:  True untuk include subfolder
+'
+'   CompressArchive(ArchiveFile, [Comment], [Password], [EncrStrength], [Level]) As Boolean
+'       Tulis antrian file ke arsip ZIP.
+'       ArchiveFile:  String (file path) atau Byte() (output buffer)
+'
+'   OpenArchive(ArchiveFile) As Boolean
+'       Buka arsip ZIP untuk dibaca.
+'       ArchiveFile:  String (file path) atau Byte() (data ZIP)
+'
+'   Extract(ArchiveFile, [TargetFolder], [Filter], [Password]) As Boolean
+'       Ekstrak file dari arsip ZIP.
+'       ArchiveFile:   String (file path) atau Byte() (data ZIP)
+'       TargetFolder:  Folder tujuan (opsional)
+'       Filter:        Wildcard filter (e.g., "*.txt")
+'       Password:      Password dekripsi (opsional)
+'
+'   ---- Raw DEFLATE Methods ----
+'
+'   Deflate(baInput(), baOutput(), [Level]) As Boolean
+'       Raw DEFLATE compress byte array.
+'
+'   Inflate(baBuffer(), baOutput()) As Boolean
+'       Raw INFLATE decompress byte array.
+'
+'   DeflateBase64(baInput(), sText, [Level]) As Boolean
+'       DEFLATE + encode ke Base64 string.
+'
+'   InflateBase64(sText, baOutput()) As Boolean
+'       Decode Base64 + INFLATE decompress.
+'
+'   DeflateInit() As Long
+'       Inisialisasi konteks DEFLATE untuk multi-block.
+'       Kembalikan handle (hCtx) untuk digunakan dengan DeflateBlob.
+'
+'   DeflateBlob(hCtx, lInputPtr, lInputSize, lOutputPtr, lOutputSize, [Level], [Final]) As Boolean
+'       Kompres satu blok data menggunakan konteks DEFLATE.
+'       hCtx:        Handle dari DeflateInit()
+'       lInputPtr:   Pointer ke data input
+'       lInputSize:  Ukuran input (bytes)
+'       lOutputPtr:  [Out] Pointer ke data output (perlu CoTaskMemFree)
+'       lOutputSize: [Out] Ukuran output (bytes)
+'       Final:       True jika ini blok terakhir
+'
+'   DeflateEnd(hCtx)
+'       Lepaskan konteks DEFLATE.
+'
+'   ---- Utility Methods ----
+'
+'   CalcCrc32Array(baData()) As Long
+'       Hitung CRC32 dari byte array.
+'
+'   CalcCrc32Ptr(lPtr, lSize, lCrc32)
+'       Hitung CRC32 dari pointer memori (akumulatif).
+'
+'   ToUtf8Array(sText) As Byte()
+'       Konversi string Unicode ke byte array UTF-8.
+'
+'   FromUtf8Array(baText()) As String
+'       Konversi byte array UTF-8 ke string Unicode.
+'
+'
+'   ---- Multi-Format Archive Methods (archiveint.dll) ----
+'
+'   ArcAvailable       As Boolean  [R]   True jika archiveint.dll tersedia
+'   ArcVersion         As String   [R]   Versi libarchive (e.g., "libarchive 3.8.4")
+'   ArcFileCount       As Long     [R]   Jumlah entry setelah ArcOpen
+'
+'   ArcOpen(ArchiveFile, [ArcType], [Password]) As Boolean
+'       Buka arsip multi-format untuk dibaca.
+'       ArcType: arAuto(0), arZip(1), arSevenZip(2), arTar(3),
+'                arTarGz(4), arTarBz2(5), arTarXz(6), arTarZst(7),
+'                arGz(8), arRar(9), arCab(10), arIso(11)
+'
+'   ArcFileInfo(Index) As Variant
+'       Array(Name, Size, FileType) untuk entry ke-Index.
+'
+'   ArcExtract(ArchiveFile, TargetFolder, [Password]) As Boolean
+'       Ekstrak semua file ke folder tujuan.
+'
+'   ArcCreate(ArchiveFile, [ArcType], [Level]) As Boolean
+'       Buat arsip baru (ZIP, 7z, TAR.*, CPIO, XAR).
+'
+'   ArcAddFile(FilePath, [ArcName]) As Boolean
+'       Tambahkan file ke arsip.
+'
+'   ArcAddFolder(FolderPath, [Recursive], [BaseFolder]) As Boolean
+'       Tambahkan semua file dari folder.
+'
+'   ArcAddBytes(Name, Data()) As Boolean
+'       Tambahkan data byte array.
+'
+'   ArcSave() As Boolean
+'       Simpan dan tutup arsip.
+'
+'   ArcClose()
+'       Tutup arsip yang sedang dibuka.
+'   ---- Events ----
+'
+'   Progress(FileIdx, Current, Total, Cancel)
+'       Dipanggil selama kompresi/dekompresi untuk reporting progress.
+'
+'   Error(FileIdx, Source, Description, Cancel)
+'       Dipanggil saat terjadi error pada file tertentu.
+'
+'   BeforeCompress(FileIdx, Level, SkipFile, Cancel)
+'       Dipanggil sebelum file dikompres (hanya jika ImplCompress aktif).
+'
+'   BeforeExtract(FileIdx, File, SkipFile, Cancel)
+'       Dipanggil sebelum file diekstrak (hanya jika ImplDecompress aktif).
+'
+'   ExtractComplete(FileIdx, File)
+'       Dipanggil setelah file berhasil diekstrak.
 '
 '=========================================================================
 Option Explicit
@@ -41,6 +236,23 @@ Public Enum ArchiveCompressionLevel
     acFastestCompression = 1    ' Paling cepat, kompresi minimal
     acNormalCompression = 6     ' Keseimbangan terbaik (Default)
     acMaxCompression = 9        ' Kompresi maksimal, paling lambat
+End Enum
+
+Public Enum ArchiveType
+    arAuto = 0              ' Auto-detect dari ekstensi file
+    arZip = 1               ' ZIP archive
+    arSevenZip = 2          ' 7-Zip archive (LZMA/LZMA2)
+    arTar = 3               ' TAR (ustar, tanpa kompresi)
+    arTarGz = 4             ' TAR + GZIP
+    arTarBz2 = 5            ' TAR + BZip2
+    arTarXz = 6             ' TAR + XZ/LZMA2
+    arTarZst = 7            ' TAR + Zstandard
+    arGz = 8                ' GZ tunggal (built-in + zlib)
+    arRar = 9               ' RAR (baca saja)
+    arCab = 10              ' CAB (baca saja)
+    arIso = 11              ' ISO 9660 (baca saja)
+    arCpio = 12             ' CPIO
+    arXar = 13              ' XAR
 End Enum
 
 Public Enum UcsFileInfoIndexEnum
@@ -101,8 +313,307 @@ Private Const STR_THUNK_BUILDDATE As String = "12.1.2018 17:15:52"
 ' end of generated code
 
 '=========================================================================
+' Embedded zlib1.dll (Base64-encoded, 75264 bytes)
+'=========================================================================
+' Auto-generated zlib1.dll embed, Size=75264 bytes, Base64=100352 chars
+Private Const STR_ZLIB_1 As String = _
+    "TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuDQ0KJAAAAAAAAABQRQAATAEHAFd23kIAAAAAAAAAAOAADiILAQI4AP4AAAAiAQAAAgAAABAAAAAQAAAAEAEAAAC4YQAQAAAAAgAABAAAAAEAAgAEAAAAAAAAAACAAQAABAAAnhICAAMAAAAAACAAABAAAAAAEAAAEAAAAAAAABAAAAAAMAEAVgYAAABAAQBIAwAAAFABAFgQAAAAAAAAAAAAAAAAAAAAAAAAAHABAEgDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC50ZXh0AAAA" & _
+    "RPwAAAAQAAAA/gAAAAQAAAAAAAAAAAAAAAAAAGAAAGAuZGF0YQAAAHAAAAAAEAEAAAIAAAACAQAAAAAAAAAAAAAAAABAAADALmJzcwAAAACQAAAAACABAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAwC5lZGF0YQAAVgYAAAAwAQAACAAAAAQBAAAAAAAAAAAAAAAAAAAAAMAuaWRhdGEAAEgDAAAAQAEAAAQAAAAMAQAAAAAAAAAAAAAAAABAAADALnJzcmMAAABYEAAAAFABAAASAAAAEAEAAAAAAAAAAAAAAAAAQAAAwC5yZWxvYwAASAMAAABwAQAABAAAACIBAAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFWJ5YPsGIl1/It1DIld+IP+AXRciXQkBItVEIlUJAiLVQiJFCTo5vMAAIPsDIP+AYnDdCyF9nUMiw0AILlhhcl1EDHbidiLXfiLdfyJ7F3CDADoWQAAAOvrjbQmAAAAAIXAddDoRwAAAOvJkI10JgDHBCSAAAAA6DT6AACjACC5" & _
+    "YYXAdBrHAAAAAACjECC5YeiL9AAA6Bb0AADpdf///+j8+QAAxwAMAAAAMcDrmIn2VYnlg+wIiV38ixUAILlhhdJ0KYsdECC5YYPrBDnTcg2LA4XAdSqD6wQ503PziRQk6Kv5AAAxwKMAILlhxwQkAAAAAOiI+QAAi138iexdw5D/0IsVACC5YevMjbYAAAAAVYnlg+wYx0QkCBAguWGLVQjHRCQEACC5YYkUJOg/+QAAhcAPlcKJ7F0PtsJIw4n2VYnlg+wYx0QkCBAguWGLVQjHRCQEACC5YYkUJOgP+QAAiexdw5CQkJCQkJCQkJCQVYnlXemX9AAAkJCQkJCQkFVXVlOLTCQUi3wkHIt0JBiJy8HrEIHh//8AAIP/AQ+E/gEAAIX2uAEAAAB0QoP/D3dCT4P//3QOD7YWT0YB0QHLg///dfKB+fD/AAB2BoHp8f8AAInYvnGAB4D35onYweoPadLx/wAAKdDB4BAJyFteX13Dgf+vFQAAD4bDAAAA" & _
+    "vXGAB4CB77AVAAC6WwEAAA+2BgHBAcsPtkYBAcEByw+2RgIBwQHLD7ZGAwHBAcsPtkYEAcEByw+2RgUBwQHLD7ZGBgHBAcsPtkYHAcEByw+2RggBwQHLD7ZGCQHBAcsPtkYKAcEByw+2RgsBwQHLD7ZGDAHBAcsPtkYNAcEByw+2Rg4BwQHLD7ZGD4PGEAHBActKD4V3////icj35YnYweoPadLx/wAAKdH35cHqD2nS8f8AACnTgf+vFQAAD4dC////hf8PhNAAAACD/w8Pho4AAAAPthaD7xAPtm4BAdEByw+2VgIB6QHLD7ZuAwHRAcsPtlYEAekByw+2bgUB0QHLD7ZWBgHpAcsPtm4HAdEByw+2VggB6QHLD7ZuCQHRAcsPtlYKAekByw+2bgsB0QHLD7ZWDAHpAcsPtm4NAdEByw+2Vg4B6QHLD7ZuDwHRAcsB6QHLg8YQg/8PD4dy////T4P//3QOD7YuT0YB6QHLg///dfKJyL1xgAeA9+WJ" & _
+    "0MHoD2nA8f8AACnBidj35cHqD2nS8f8AACnTidjpSP7//w+2FgHRgfnw/wAAdgaB6fH/AAABy4H78P8AAHbcgevx/wAA69SJ9o28JwAAAABVV1ZTg+wci0wkPMdEJAjx/wAAi1QkOItcJDCJTCQEi3QkNMdEJAwAAAAAD7frwesQiRQk6Gf0AACJx4nBD6/9unGAB4CJ+PfiweoPadLx/wAAKdeJ8oHi//8AAMHuEI0EKgHzjajw/wAAKcuB/fH/AACNvDvx/wAAdhWNaP+B/fH/AAB2Co2oDgD//410JgCB/+L/AQB2BoHv4v8BAIH/8f8AAHYGge/x/wAAg8QcwecQCf1bieheX13DkJCQkJAxLjIuMwCNdgCNvCcAAAAAg+xci0wkYIl8JFiLfCRkiVwkUItcJGyJdCRUixeJTCQci3QkaIlcJBSJVCQgi1QkcIl0JBCNdCQQx0QkMAAAAADHRCQ0AAAAAMdEJDgAAAAAx0QkDDgAAADHRCQIkBS4" & _
+    "YYlUJASJNCTos0UAAIXAdBCLXCRQi3QkVIt8JFiDxFzDx0QkBAQAAACJNCToL00AAIP4AYnDdBWJNCToQFkAAIXbidh1y7j7////68SLVCQkiReJNCToJVkAAOu0jXYAg+wci1QkLMdEJBD/////i0wkKIlUJAyLVCQkiUwkCIlUJASLVCQgiRQk6BH///+DxBzDjbYAAAAAjbwnAAAAAItUJASJ0MHoDI0MEMHqDo1ECgvDkJCQkJCQkJCQkJCQAAAAAJYwB3csYQ7uulEJmRnEbQeP9GpwNaVj6aOVZJ4yiNsOpLjceR7p1eCI2dKXK0y2Cb18sX4HLbjnkR2/kGQQtx3yILBqSHG5895BvoR91Noa6+TdbVG11PTHhdODVphsE8Coa2R6+WL97Mllik9cARTZbAZjYz0P+vUNCI3IIG47XhBpTORBYNVycWei0eQDPEfUBEv9hQ3Sa7UKpfqotTVsmLJC1sm720D5vKzjbNgydVzfRc8N1txZPdGr" & _
+    "rDDZJjoA3lGAUdfIFmHQv7X0tCEjxLNWmZW6zw+lvbieuAIoCIgFX7LZDMYk6Quxh3xvLxFMaFirHWHBPS1mtpBB3HYGcdsBvCDSmCoQ1e+JhbFxH7W2BqXkv58z1LjooskHeDT5AA+OqAmWGJgO4bsNan8tPW0Il2xkkQFcY+b0UWtrYmFsHNgwZYVOAGLy7ZUGbHulARvB9AiCV8QP9cbZsGVQ6bcS6ri+i3yIufzfHd1iSS3aFfN804xlTNT7WGGyTc5RtTp0ALyj4jC71EGl30rXldg9bcTRpPv01tNq6WlD/NluNEaIZ63QuGDacy0EROUdAzNfTAqqyXwN3TxxBVCqQQInEBALvoYgDMkltWhXs4VvIAnUZrmf5GHODvneXpjJ2SkimNCwtKjXxxc9s1mBDbQuO1y9t61susAgg7jttrO/mgzitgOa0rF0OUfV6q930p0VJtsEgxbccxILY+OEO2SUPmptDahaanoLzw7knf8JkyeuAAqxngd9" & _
+    "RJMP8NKjCIdo8gEe/sIGaV1XYvfLZ2WAcTZsGecGa252G9T+4CvTiVp62hDMSt1nb9+5+fnvvo5DvrcX1Y6wYOij1tZ+k9GhxMLYOFLy30/xZ7vRZ1e8pt0GtT9LNrJI2isN2EwbCq/2SgM2YHoEQcPvYN9V32eo745uMXm+aUaMs2HLGoNmvKDSbyU24mhSlXcMzANHC7u5FgIiLyYFVb47usUoC72yklq0KwRqs1yn/9fCMc/QtYue2Swdrt5bsMJkmybyY+yco2p1CpNtAqkGCZw/Ng7rhWcHchNXAAWCSr+VFHq44q4rsXs4G7YMm47Skg2+1eW379x8Id/bC9TS04ZC4tTx+LPdaG6D2h/NFr6BWya59uF3sG93R7cY5loIiHBqD//KOwZmXAsBEf+eZY9prmL40/9rYUXPbBZ44gqg7tIN11SDBE7CswM5YSZnp/cWYNBNR2lJ23duPkpq0a7cWtbZZgvfQPA72DdTrrypxZ673n/Pskfp/7Uw" & _
+    "HPK9vYrCusowk7NTpqO0JAU20LqTBtfNKVfeVL9n2SMuemazuEphxAIbaF2UK28qN74LtKGODMMb3wVaje8CLQAAAABBMRsZgmI2MsNTLSsExWxkRfR3fYanWlbHlkFPCIrZyEm7wtGK6O/6y9n04wxPtaxNfq61ji2Dns8cmIdREsJKECPZU9Nw9HiSQe9hVdeuLhTmtTfXtZgcloSDBVmYG4IYqQCb2/otsJrLNqldXXfmHGxs/98/QdSeDlrNoiSEleMVn4wgRrKnYXepvqbh6PHn0PPoJIPew2Wyxdqqrl1d659GRCjMa29p/XB2rmsxOe9aKiAsCQcLbTgcEvM2Rt+yB13GcVRw7TBla/T38yq7tsIxonWRHIk0oAeQ+7yfF7qNhA553qklOO+yPP9583O+SOhqfRvFQTwq3lgFT3nwRH5i6YctT8LGHFTbAYoVlEC7Do2D6COmwtk4vw3FoDhM9Lshj6eWCs6WjRMJAMxcSDHXRYti+m7KU+F3"
+Private Const STR_ZLIB_2 As String = _
+    "VF27uhVsoKPWP42Ilw6WkVCY194RqczH0vrh7JPL+vVc12JyHeZ5a961VECfhE9ZWBIOFhkjFQ/acDgkm0EjPadr/WXmWuZ8JQnLV2Q40E6jrpEB4p+KGCHMpzNg/bwqr+Ekre7QP7QtgxKfbLIJhqskSMnqFVPQKUZ++2h3ZeL2eT8vt0gkNnQbCR01KhIE8rxTS7ONSFJw3mV5Me9+YP7z5ue/wv3+fJHQ1T2gy8z6NoqDuweRmnhUvLE5ZaeoS5iDOwqpmCLJ+rUJiMuuEE9d718ObPRGzT/ZbYwOwnRDElrzAiNB6sFwbMGAQXfYR9c2lwbmLY7FtQClhIQbvBqKQXFbu1pomOh3Q9nZbFoeTy0VX342DJwtGyfdHAA+EgCYuVMxg6CQYq6L0VO1khbF9N1X9O/ElKfC79WW2fbpvAeuqI0ct2veMZwq7yqF7XlryqxIcNNvG134LipG4eE23magB8V/Y1ToVCJl803l87ICpMKpG2eRhDAmoJ8p" & _
+    "uK7F5Pmf3v06zPPWe/3oz7xrqYD9WrKZPgmfsn84hKuwJBws8RUHNTJGKh5zdzEHtOFwSPXQa1E2g0Z6d7JdY07X+ssP5uHSzLXM+Y2E1+BKEpavCyONtshwoJ2JQbuERl0jAwdsOBrEPxUxhQ4OKEKYT2cDqVR+wPp5VYHLYkwfxTiBXvQjmJ2nDrPclhWqGwBU5VoxT/yZYmLX2FN5zhdP4UlWfvpQlS3Xe9QczGITio0tUruWNJHoux/Q2aAG7PN+Xq3CZUdukUhsL6BTdeg2EjqpBwkjalQkCCtlPxHkeaeWpUi8j2YbkaQnKoq94LzL8qGN0Oti3v3AI+/m2b3hvBT80KcNP4OKJn6ykT+5JNBw+BXLaTtG5kJ6d/1btWtl3PRafsU3CVPudjhI97GuCbjwnxKhM8w/inL9JJMAAAAAN2rCAW7UhANZvkYC3KgJB+vCywayfI0EhRZPBbhREw6PO9EP1oWXDeHvVQxk+RoJU5PYCAotngo9R1wL" & _
+    "cKMmHEfJ5B0ed6IfKR1gHqwLLxubYe0awt+rGPW1aRnI8jUS/5j3E6YmsRGRTHMQFFo8FSMw/hR6jrgWTeR6F+BGTTjXLI85jpLJO7n4Czo87kQ/C4SGPlI6wDxlUAI9WBdeNm99nDc2w9o1AakYNIS/VzGz1ZUw6mvTMt0BETOQ5Wskp4+pJf4x7yfJWy0mTE1iI3snoCIimeYgFfMkISi0eCof3rorRmD8KXEKPij0HHEtw3azLJrI9S6tojcvwI2acPfnWHGuWR5zmTPcchwlk3crT1F2cvEXdEWb1XV43Il+T7ZLfxYIDX0hYs98pHSAeZMeQnjKoAR6/crGe7AuvGyHRH5t3vo4b+mQ+m5shrVrW+x3agJSMWg1OPNpCH+vYj8VbWNmqythUcHpYNTXpmXjvWRkugMiZo1p4Gcgy9dIF6EVSU4fU0t5dZFK/GPeT8sJHE6St1pMpd2YTZiaxEav8AZH9k5ARcEkgkREMs1Bc1gPQCrmSUIdjItD" & _
+    "UGjxVGcCM1U+vHVXCda3VozA+FO7qjpS4hR8UNV+vlHoOeJa31MgW4btZlmxh6RYNJHrXQP7KVxaRW9ebS+tX4AbNeG3cffg7s+x4tmlc+Ncszzma9n+5zJnuOUFDXrkOEom7w8g5O5WnqLsYfRg7eTiL+jTiO3pijar671caerwuBP9x9LR/J5sl/6pBlX/LBAa+ht62PtCxJ75da5c+EjpAPN/g8LyJj2E8BFXRvGUQQn0oyvL9fqVjffN/0/2YF142Vc3utgOifzaOeM+27z1cd6Ln7Pf0iH13eVLN9zYDGvX72ap1rbY79SBsi3VBKRi0DPOoNFqcObTXRok0hD+XsUnlJzEfiraxklAGMfMVlfC+zyVw6KC08GV6BHAqK9Ny5/Fj8rGe8nI8RELyXQHRMxDbYbNGtPAzy25As5Alq+Rd/xtkC5CK5IZKOmTnD6mlqtUZJfy6iKVxYDglPjHvJ/PrX6elhM4nKF5+p0kb7WYEwV3mUq7MZt90fOa" & _
+    "MDWJjQdfS4xe4Q2OaYvPj+ydgIrb90KLgkkEibUjxoiIZJqDvw5YguawHoDR2tyBVMyThGOmUYU6GBeHDXLVhqDQ4qmXuiCozgRmqvlupKt8eOuuSxIprxKsb60lxq2sGIHxpy/rM6Z2VXWkQT+3pcQp+KDzQzqhqv18o52XvqLQc8S15xkGtL6nQLaJzYK3DNvNsjuxD7NiD0mxVWWLsGgi17tfSBW6BvZTuDGckbm0it68g+AcvdpeWr/tNJi+AAAAAGVnvLiLyAmq7q+1EleXYo8y8N433F9rJbk4153vKLTFik8IfWTgvW8BhwHXuL/WSt3YavIzd9/gVhBjWJ9XGVD6MKXoFJ8Q+nH4rELIwHvfrafHZ0MIcnUmb87NcH+tlRUYES37t6Q/ntAYhyfozxpCj3OirCDGsMlHegg+rzKgW8iOGLVnOwrQAIeyaThQLwxf7Jfi8FmFh5flPdGHhmW04DrdWk+Pzz8oM3eGEOTq43dYUg3Y7UBov1H4" & _
+    "ofgr8MSfl0gqMCJaT1ee4vZvSX+TCPXHfadA1RjA/G1O0J81K7cjjcUYlp+gfyonGUf9unwgQQKSj/QQ9+hIqD1YFJtYP6gjtpAdMdP3oYlqz3YUD6jKrOEHf76EYMMG0nCgXrcXHOZZuKn0PN8VTIXnwtHggH5pDi/Le2tId8OiDw3Lx2ixcynHBGFMoLjZ9ZhvRJD/0/x+UGbuGzfaVk0nuQ4oQAW2xu+wpKOIDBwasNuBf9dnOZF40iv0H26TA/cmO2aQmoOIPy+R7ViTKVRgRLQxB/gM36hNHrrP8abs35L+ibguRmcXm1QCcCfsu0jwcd4vTMkwgPnbVedFY5ygP2v5x4PTF2g2wXIPinnLN13krlDhXED/VE4lmOj2c4iLrhbvNxb4QIIEnSc+vCQf6SFBeFWZr9fgi8qwXDM7tlntXtHlVbB+UEfVGez/bCE7YglGh9rn6TLIgo6OcNSe7Six+VGQX1bkgjoxWDqDCY+n5m4zHwjBhg1tpjq1" & _
+    "pOFAvcGG/AUvKUkXSk71r/N2IjKWEZ6KeL4rmB3ZlyBLyfR4Lq5IwMAB/dKlZkFqHF6W93k5Kk+Xlp9d8vEj5QUZa01gftf1jtFi5+u23l9SjgnCN+m1etlGAGi8IbzQ6jHfiI9WYzBh+dYiBJ5qmr2mvQfYwQG/Nm60rVMJCBWaTnId/ynOpRGGe7d04ccPzdkQkqi+rCpGERk4I3algHVmxtgQAXpg/q7PcpvJc8oi8aRXR5YY76k5rf3MXhFFBu5NdmOJ8c6NJkTc6EH4ZFF5L/k0HpNB2rEmU7/WmuvpxvmzjKFFC2IO8BkHaUyhvlGbPNs2J4Q1mZKWUP4uLpm5VCb83uieEnFdjHcW4TTOLjapq0mKEUXmPwMggYO7dpHg4xP2XFv9WelJmD5V8SEGgmxEYT7Uqs6Lxs+pN344QX/WXSbDbrOJdnzW7srEb9YdWQqxoeHkHhTzgXmoS9dpyxOyDnerXKHCuTnGfgGA/qmc5ZkVJAs2oDZuURyO" & _
+    "pxZmhsJx2j4s3m8sSbnTlPCBBAmV5rixe0kNox4usRtIPtJDLVlu+8P22+mmkWdRH6mwzHrODHSUYblm8QYF3gAAAAB3BzCW7g5hLJkJUboHbcQZcGr0j+ljpTWeZJWjDtuIMnncuKTg1ekel9LZiAm2TCt+sXy957gtB5C/HZEdtxBkarAg8vO5cUiEvkHeGtrUfW3d5Ov01LVRg9OFxxNsmFZka6jA/WL5eoplyewUAVxPYwZs2foPPWONCA31O24gyExpEF7VYEHkomdxcjwD5NFLBNRH0g2F/aUKtWs1taj6QrKYbNu7ydasvPlAMths40XfXHXc1g3Pq9E9WSbZMKxR3gA6yNdRgL/QYRYhtPS1VrPEI8+6lZm4vaUPKAK4nl8FiAjGDNmysQvpJC9vfIdYaEwRwWEdq7ZmLT123EGQAdtxBpjSILzv1RAqcbGFiQa2tR+fv+Sl6LjUM3gHyaIPAPk0lgmojuEOmBh/ag27CG09LZFkbJfmY1wB" & _
+    "a2tR9BxsYWKFZTDY8mIATmwGle0bAaV7ggj0wfUPxFdlsNnGErfpUIu+uOr8uYh8Yt0d3xXaLUmM03zz+9RMZU2yYVg6tVHOo7wAdNS7MOJK36VBPdiV16TRxG3T1vT7Q2npajRu2fytZ4hG2mC40EQELXMzAx3lqgpMX90NfMlQBXE8JwJBqr4LEBDJDCCGV2i1JSBvhbO5ZtQJzmHkn17e+Q4p2cmYsNCYIsfXqLRZsz0XLrQNgbe9XDvAumyt7biDIJq/s7YDtuIMdLHSmurVRzmd0nevBNsmFXPcFoPjYwsSlGQ7hA1taj56alqo5A7PC5MJ/50KAK4nfQeesfAPk0SHCKPSHgHyaGkGwv73YlddgGVnyxlsNnFuawbn/tQbdonTK+AQ2npaZ91KzPm532+Ovu/5F7e+Q2CwjtXW1qPoodGTfjjYwsRP3/JS0btn8aa8V2c/tQbdSLI2S9gNK9qvChtMNgNK9kEEemDfYO/DqGffVTFuju9Gab55" & _
+    "y2GzjLxmgxolb9KgUmjiNswMd5W7C0cDIgIWuVUFJi/Fuju+sr0LKCu0WpJcs2oEwtf/p7XQzzEs2Z6LW96uHZtkwrDsY/ImdWqjnAJtkwqcCQap6w42P3IHZ4UFAFcTlb9KguK4ehR7sSuuDLYbOJLSjpvl1b4NfNzvtwvb3yGG09LU8dTiQmjds/gf2oNugb4Wzfa5JltvsHfhGLdHd4gIWub/D2pwZgY7yhEBC1yPZZ7/+GKuaWFr/9MWbM9FoArieNcN0u5OBINUOQOzwqdnJmHQYBb3SWlHTT5ud9uu0WpK2dZa3EDfC2Y32DvwqbyuU967nsVHss9/MLX/6b298hzKusKKU7OTMCS0o6a60DYFzdcGk1TeVykj2We/s2Z6LsRhSrhdaBsCKm8rlLQLvjfDDI6hWgXfGy0C740AAAAAGRsxQTI2YoIrLVPDZGzFBH139EVWWqeGT0GWx8jZigjRwrtJ+u/oiuP02custU8Mta5+TZ6DLY6HmBzP"
+Private Const STR_ZLIB_3 As String = _
+    "SsISUVPZIxB49HDTYe9Bki6u11U3teYUHJi11wWDhJaCG5hZmwCpGLAt+tupNsua5nddXf9sbBzUQT/fzVoOnpWEJKKMnxXjp7JGIL6pd2Hx6OGm6PPQ58PegyTaxbJlXV2uqkRGn+tva8wodnD9aTkxa64gKlrvCwcJLBIcOG3fRjbzxl0Hsu1wVHH0a2Uwuyrz96IxwraJHJF1kAegNBefvPsOhI26JaneeTyy7zhz83n/auhIvkHFG31Y3io88HlPBelifkTCTy2H21QcxpQVigGNDrtApiPog7842cI4oMUNIbv0TAqWp48TjZbOXMwACUXXMUhu+mKLd+FTyrq7XVSjoGwViI0/1pGWDpfe15hQx8ypEezh+tL1+suTcmLXXGt55h1AVLXeWU+EnxYOElgPFSMZJDhw2j0jQZtl/WunfOZa5lfLCSVO0DhkAZGuoxiKn+Izp8whKrz9YK0k4a+0P9DunxKDLYYJsmzJSCSr0FMV6vt+RiniZXdo" & _
+    "Lz959jYkSLcdCRt0BBIqNUtTvPJSSI2zeWXecGB+7zHn5vP+/v3Cv9XQkXzMy6A9g4o2+pqRB7uxvFR4qKdlOTuDmEsimKkKCbX6yRCuy4hf711PRvRsDm3ZP810wg6M81oSQ+pBIwLBbHDB2HdBgJc210eOLeYGpQC1xbwbhIRxQYoaaFq7W0N36JhabNnZFS1PHgw2fl8nGy2cPgAc3bmYABKggzFTi65ikJK1U9Hd9MUWxO/0V+/Cp5T22ZbVrge86bccjaicMd5rhSrvKspree3TcEis+F0bb+FGKi5m3jbhf8UHoFToVGNN82UiArLz5RupwqQwhJFnKZ+gJuTFrrj93p/51vPMOs/o/XuAqWu8mbJa/bKfCT6rhDh/LBwksDUHFfEeKkYyBzF3c0hw4bRRa9D1ekaDNmNdsnfL+tdO0uHmD/nMtczg14SNr5YSSraNIwudoHDIhLtBiQMjXUYaOGwHMRU/xCgODoVnT5hCflSpA1V5+sBMYsuB" & _
+    "gTjFH5gj9F6zDqedqhWW3OVUABv8TzFa12Jimc55U9hJ4U8XUPp+VnvXLZVizBzULY2KEzSWu1Ifu+iRBqDZ0F5+8+xHZcKtbEiRbnVToC86EjboIwkHqQgkVGoRP2Urlqd55I+8SKWkkRtmvYoqJ/LLvODr0I2hwP3eYtnm7yMUvOG9DafQ/CaKgz8/kbJ+cNAkuWnLFfhC5kY7W/13etxla7XFflr07lMJN/dIOHa4Ca6xoRKf8Io/zDOTJP1yAAAAAAHCajcDhNRuAka+WQcJqNwGy8LrBI18sgVPFoUOE1G4D9E7jw2XhdYMVe/hCRr5ZAjYk1MKni0KC1xHPRwmo3Ad5MlHH6J3Hh5gHSkbLwusGu1hmxir38IZabX1EjXyyBP3mP8RsSamEHNMkRU8WhQU/jAjFriOehd65E04TUbgOY8s1zvJko46C/i5P0TuPD6GhAs8wDpSPQJQZTZeF1g3nH1vNdrDNjQYqQExV7+EMJXVszLTa+ozEQHd" & _
+    "JGvlkCWpj6cn7zH+Ji1bySNiTUwioCd7IOaZIiEk8xUqeLQoK7reHyn8YEYoPgpxLXEc9CyzdsMu9ciaLzeirXCajcBxWOf3cx5ZrnLcM5l3kyUcdlFPK3QX8XJ11ZtFfonceH9Ltk99DQgWfM9iIXmAdKR4Qh6TegSgynvGyv1svC6wbX5Eh284+t5u+pDpa7WGbGp37FtoMVICafM4NWKvfwhjbRU/YSurZmDpwVFlptfUZGS942YiA7pn4GmNSNfLIEkVoRdLUx9OSpF1eU/eY/xOHAnLTFq3kk2Y3aVGxJqYRwbwr0VATvZEgiTBQc0yREAPWHNCSeYqQ4uMHVTxaFBVMwJnV3W8Pla31glT+MCMUjqqu1B8FOJRvn7VWuI56FsgU99ZZu2GWKSHsV3rkTRcKfsDXm9FWl+tL23hNRuA4Pdxt+Kxz+7jc6XZ5jyzXOf+2WvluGcy5HoNBe8mSjju5CAP7KKeVu1g9GHoL+Lk6e2I0+urNorqaVy9" & _
+    "/RO48PzR0sf+l2ye/1UGqfoaECz72Hob+Z7EQvhcrnXzAOlI8sKDf/CEPSbxRlcR9AlBlPXLK6P3jZX69k//zdl4XWDYujdX2vyJDts+4znecfW837Ofi931IdLcN0vl12sM2NapZu/U79i21S2ygdBipATRoM4z0+ZwatIkGl3FXv4QxJyUJ8baKn7HGEBJwldWzMOVPPvB04KiwBHolctNr6jKj8WfyMl7xskLEfHMRAd0zYZtQ8/A0xrOArktka+WQJBt/HeSK0Iuk+koGZamPpyXZFSrlSLq8pTggMWfvMf4nn6tz5w4E5ad+nmhmLVvJJl3BRObMbtKmvPRfY2JNTCMS18Hjg3hXo/Pi2mKgJ3si0L324kESYKIxiO1g5pkiIJYDr+AHrDmgdza0YSTzFSFUaZjhxcYOobVcg2p4tCgqCC6l6pmBM6rpG75rut4fK8pEkutb6wSrK3GJafxgRimM+svpHVVdqW3P0Gg+CnEoTpD86N8/aqivped" & _
+    "tcRz0LQGGee2QKe+t4LNibLN2wyzD7E7sUkPYrCLZVW71yJouhVIX7hT9ga5kZwxvN6KtL0c4IO/Wl7avpg07QAAAAC4vGdlqgnIixK1r+6PYpdXN97wMiVrX9yd1zi5xbQo730IT4pvveBk1wGHAUrWv7jyatjd4N93M1hjEFZQGVef6KUw+voQnxRCrPhx33vAyGfHp611cghDzc5vJpWtf3AtERgVP6S3+4cY0J4az+gnonOPQrDGIKwIekfJoDKvPhiOyFsKO2e1socA0C9QOGmX7F8MhVnw4j3ll4dlhofR3TrgtM+PT1p3Myg/6uQQhlJYd+NA7dgN+FG/aPAr+KFIl5/EWiIwKuKeV09/SW/2x/UIk9VAp31t/MAYNZ/QTo0jtyuflhjFJyp/oLr9RxkCQSB8EPSPkqhI6PebFFg9I6g/WDEdkLaJoffTFHbPaqzKqA++fwfhBsNghF6gcNLmHBe39Km4WUwV3zzRwueFaX6A4HvLLw7Dd0hr" & _
+    "yw0PonOxaMdhBMcp2bigTERvmPX80/+Q7mZQflbaNxsOuSdNtgVAKKSw78YcDIijgduwGjln138r0niRk24f9Dsm9wODmpBmkS8/iCmTWO20RGBUDPgHMR5NqN+m8c+6/pLf7EYuuIlUmxdn7CdwAnHwSLvJTC/e2/mAMGNF51VrP6Cc04PH+cE2aBd5ig9y5F03y1zhUK5OVP9A9uiYJa6LiHMWN+8WBIJA+Lw+J50h6R8kmVV4QYvg168zXLDK7Vm2O1Xl0V5HUH6w/+wZ1WI7IWzah0YJyDLp53COjoIo7Z7UkFH5sYLkVl86WDE6p48Jgx8zbuYNhsEItTqmbb1A4aQF/IbBF0kpL6/1TkoyInbzip4Rlpgrvnggl9kdePTJS8BIri7S/QHAakFmpfeWXhxPKjl5XZ+Wl+Uj8fJNaxkF9dd+YOdi0Y5f3rbrwgmOUnq16TdoAEbZ0LwhvIjfMeowY1aPItb5YZpqngQHvaa9vwHB2K20bjYVCAlT" & _
+    "HXJOmqXOKf+3e4YRD8fhdJIQ2c0qrL6oOBkRRoCldiPYxmZ1YHoBEHLPrv7Kc8mbV6TxIu8Ylkf9rTmpRRFezHZN7gbO8Ylj3EQmjWT4Qej5L3lRQZMeNFMmsdrrmta/s/nG6QtFoYwZ8A5ioUxpBzybUb6EJzbblpKZNS4u/lAmVLmZnuje/IxdcRI04RZ3qTYuzhGKSasDP+ZFu4OBIOPgkXZbXPYTSelZ/fFVPphsggYh1D5hRMaLzqp+N6nP1n9BOG7DJl18domzxMru1lkd1m/hobEK8xQe5EuoeYETy2nXq3cOsrnCoVwBfsY5nKn+gCQVmeU2oDYLjhxRboZmFqc+2nHCLG/eLJTTuUkJBIHwsbjmlaMNSXsbsS4eQ9I+SPtuWS3p2/bDUWeRpsywqR90DM56ZrlhlN4FBvG4wBW4YcONdgCNvCcAAAAAi1QkCIXSdAjrFo22AAAAADHAw422AAAAAI28JwAAAABXVlOLfCQYi1wkEItUJBSF" & _
+    "//fTdCv2wgN0Jo22AAAAAA+2AkIw2A+2yMHrCIs0jcAVuGEx8090CPbCA3XjjXYAg/8fidYPhvEBAACQjXQmAIsWg8YEMdMPtssPtseLFIXAHbhhiwSNwCG4YcHrEDHCD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidOLFjHLg8YEMdMPtssPtseLFIXAHbhhwesQiwSNwCG4YTHCD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidOLFoPGBDHLMdMPtssPtseLFIXAHbhhwesQiwSNwCG4YTHCD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidOLFoPGBDHLMdMPtssPtseLFIXAHbhhiwSNwCG4YcHrEDHCD7bDiwyFwBm4YYnYMcrB6AiJ04sMhcAVuGGLFoPGBDHLMdMPtssPtseLFIXAHbhhwesQiwSNwCG4YTHCD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidOLFoPGBDHLMdMPtssPtseLFIXAHbhh" & _
+    "wesQiwSNwCG4YTHCD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidOLFoPGBDHLMdMPtssPtseLFIXAHbhhiwSNwCG4YcHrEDHCD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidOLFjHLg8YEMdMPtssPtseLFIXAHbhhiwSNwCG4YTHCwesQg+8gD7bDiwyFwBm4YYnYwegIMcqLDIXAFbhhidMxy4P/Hw+HFP7//4P/A3ZT6w2QkJCQkJCQkJCQkJCQixaD7wSDxgQx0w+2yw+2x4sUhcAduGHB6xCLBI3AIbhhMcIPtsOLDIXAGbhhidjB6AgxyosMhcAVuGGJ0zHLg/8Dd7yF/4nydB6NtgAAAAAPtgJCMNgPtsjB6wiLNI3AFbhhMfNPdej304nYW15fw1dWU4tMJBCLfCQYi3QkFInLicrB6wiB4wD/AADB6hgB2onLgeMA/wAAweMIAdrB4RiNHBGF//fTdEb3xgMAAAB0Po20JgAAAACNvCcAAAAA"
+Private Const STR_ZLIB_4 As String = _
+    "D7YOidrB6hjB4whGMcqLDJXAJbhhMctPdBb3xgMAAAB13o20JgAAAACNvCcAAAAAg+4Eg/8fD4bwAQAAjXQmAIPGBIsWg8YEMdMPtssPtseLFIXAKbhhwesQiwSNwCW4YTHCD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidOLFoPGBDHLMdMPtssPtseLFIXAKbhhiwSNwCW4YcHrEDHCD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidOLFjHLg8YEMdMPtssPtseLFIXAKbhhwesQiwSNwCW4YTHCD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidOLFjHLMdMPtssPtseLFIXAKbhhiwSNwCW4YcHrEDHCD7bDiwyFwC24YYnYMcrB6AiDxgSLDIXAMbhhidOLFoPGBDHLMdMPtssPtseLFIXAKbhhiwSNwCW4YcHrEDHCD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidOLFjHLg8YEMdMPtssPtseLFIXA" & _
+    "KbhhwesQiwSNwCW4YTHCD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidOLFoPGBDHLMdMPtssPtseLFIXAKbhhwesQiwSNwCW4YTHCD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidOLFjHLMdMPtssPtseLFIXAKbhhiwSNwCW4YTHCwesQg+8gD7bDiwyFwC24YYnYwegIMcqLDIXAMbhhidMxy4P/Hw+HFP7//4P/A3ZT6w2QkJCQkJCQkJCQkJCQg8YEg+8EixYx0w+2yw+2x4sUhcApuGHB6xCLBI3AJbhhMcIPtsOLDIXALbhhidjB6AgxyosMhcAxuGGJ0zHLg/8Dd7yDxgSF/3QfkI10JgAPtg6J2sHqGMHjCEYxyosMlcAluGExy0915vfTid+J2Inewe8IgecA/wAAwegYgeYA/wAAAfjB5ggB8MHjGAHYW15fw422AAAAAI2/AAAAAFVXVlOB7BwBAACLjCQ4AQAAi4QkPAEAAIusJDABAACJ" & _
+    "TCQIiUQkDAnID4R0AQAAx0QkECCDuO26AQAAALgBAAAAiVSEEEAB0oP4H370jbwkkAAAADHbjXQkEIsEnjHJifKFwHQYjXQmAI28JwAAAACoAXQCMwqDwgTR6HXziQyfQ4P7H37UMduLBJ8xyYn6hcB0Go22AAAAAI28JwAAAACoAXQCMwqDwgTR6HXziQyeQ4P7H37SMduQjbQmAAAAAIsEnjHJifKFwHQSkI10JgCoAXQCMwqDwgTR6HXziQyfQ4P7H37ai1QkCIPiAYXSdBsxyYn6he2J6HQPqAF0BIsqMemDwgTR6HXxic2LXCQMi0wkCA+s2QHR+4lcJAwJy4lMJAh0dDHbkI20JgAAAACLBJ8xyYn6hcB0EpCNdCYAqAF0AjMKg8IE0eh184kMnkOD+x9+2otUJAiD4gGF0nQbMcmJ8oXtieh0D6gBdASLKjHpg8IE0eh18YnNi0QkDItMJAgPrMEB0fiJRCQMCciJTCQID4Uc////i7QkNAEA" & _
+    "ADH1gcQcAQAAiehbXl9dw5CQkJCQkJCQkJCQkJCQkJAfAAAAiwAAAJCNtCYAAAAAg+wMi1QkFMdEJAj/////iVQkBItUJBCJFCTosRYAAIPEDMM8ZmQ6JWQ+AJCNdCYAg+xMMcCJdCRIi3QkUIlcJESF9ngsiXQkCI1cJBDHRCQE0z24YYkcJOhDzQAAiXQkCItUJFSJHCSJVCQE6F8WAACLXCREi3QkSIPETMONdgCD7ByJXCQQi1wkIIl0JBSLdCQohduJfCQYi3wkJHQGgHtcd3Qbi1wkELj+////i3QkFIt8JBiDxBzDjbYAAAAAi1MQhdJ0IIl0JCiLdCQUiXwkJIt8JBiJXCQgi1wkEIPEHOkpIgAAi0tIi0NAiUsMiUQkDMdEJAgAQAAAx0QkBAEAAACJDCTohMwAAD0AQAAAdAfHQzj/////x0MQAEAAAOukjbYAAAAAjbwnAAAAAIPsHIl0JBSLdCQgiVwkEIl8JBiLXgSD+wEPh5EAAACF" & _
+    "23QKiz6LTkQPtgeIAeiOywAAxwAAAAAAi35AiNnHRCQEAQAAALoAQAAA0/qJfCQMiVQkCItORAHLiRwk6O/LAACFwInDdRmLTkD2QQwgdBDHRjj/////ifaNvCcAAAAAi1YEAdqLXkSJVgSD+gGJHnceiVZYjXQmAI28JwAAAACLXCQQi3QkFIt8JBiDxBzDiwaAOB90CcdGWAEAAADr4IB4AYt18YtWBIPAArv/////iQaLTjyD6gKJVgSFyXUThdIPhHkEAAD/TgSLFg+2GkKJFoXJv/////91F4tGBIXAD4T7AwAAiw5IiUYED7Y5QYkOg/sIdAzHRjj9////6Xz////3x+AAAAB17ItOPDHbhcl1EYtGBIXAD4RgAwAA/wZIiUYEQ4P7BXbl98cEAAAAdGmFybv/////dReLRgSFwA+EzwIAAIsWSIlGBA+2GkKJFoXJuv////91F4tGBIXAD4RKAgAASIlGBIsGD7YQQIkGweIIAdNLg/v/dB6F" & _
+    "yXUai0YEhcAPhMQBAABIiUYEiwYPthBAiQZCddz3xwgAAAB0J4XJuv////91F4tGBIXAD4Q0AQAAix5IiUYED7YTQ4kehdJ0A0J12ffHEAAAAHQnhcm6/////3UXi0YEhcAPhKAAAACLHkiJRgQPthNDiR6F0nQDQnXZg+cCdBkx24XJdQ2LRgSFwHQf/wZIiUYEQ4P7AXbpMdKFyQ+Uwo1cUv2JXjjpVP7//+hvyQAAxwAAAAAAi1ZAx0QkCABAAADHRCQEAQAAAIlUJAyLfkSJPCTo18kAAIlGBIXAdR7HRjwBAAAAi05A9kEMIHQHx0Y4/////7kBAAAA65WLfkSLTjyJPuuF6BPJAADHAAAAAACLTkDHRCQIAEAAAMdEJAQBAAAAiUwkDItWRIkUJOh7yQAAiUYEhcB1JMdGPAEAAACLXkD2QwwgdAfHRjj/////i048uv/////pFP///4tORIkOi0486fv+///orsgAAMcAAAAAAIteQMdEJAgA" & _
+    "QAAAx0QkBAEAAACJXCQMi1ZEiRQk6BbJAACJRgSFwHUkx0Y8AQAAAItOQPZBDCB0B8dGOP////+LTjy6/////+mA/v//i15Ei048iR7pZ/7//+hJyAAAxwAAAAAAi05Ax0QkCABAAADHRCQEAQAAAIlMJAyLVkSJFCToscgAAIlGBIXAdA2LTkSJDotOPOn7/f//x0Y8AQAAAIteQPZDDCB0B8dGOP////+LTjzp6/3//+jpxwAAxwAAAAAAi1ZAx0QkCABAAADHRCQEAQAAAIlUJAyLTkSJDCToUcgAAIlGBIXAdSTHRjwBAAAAi05A9kEMIHQHx0Y4/////4tOPLr/////6Wr9//+LTkSJDotOPOlR/f//6ITHAADHAAAAAACLVkDHRCQIAEAAAMdEJAQBAAAAiVQkDIteRIkcJOjsxwAAiUYEhcB1JMdGPAEAAACLTkD2QQwgdAfHRjj/////i048u//////p5fz//4teRItOPIke6cz8//+NdCYA" & _
+    "6BvHAADHAAAAAACLTkDHRCQIAEAAAMdEJAQBAAAAiUwkDItWRIkUJOiDxwAAiUYEhcB1IcdGPAEAAACLVkD2QgwgdAfHRjj/////uQEAAADpUfz//4tORIkOi0486T78///oucYAAMcAAAAAAItOQMdEJAgAQAAAx0QkBAEAAACJTCQMi35EiTwk6CHHAACJRgSFwHUhx0Y8AQAAAItWQPZCDCB0B8dGOP////+//////+m8+///i35EiT7ppvv//+haxgAAxwAAAAAAi35Ax0QkCABAAADHRCQEAQAAAIl8JAyLVkSJFCTowsYAAIlGBIXAdSTHRjwBAAAAi05A9kEMIHQHx0Y4/////4tOPLv/////6Tr7//+LXkSLTjyJHuki+///jXYAjbwnAAAAAFa4/v///zH2U4PsBItcJBCF23RXi0NQhcAPhcEAAACLUxyF0nQUD7ZDXDx3D4SjAAAAPHIPhIwAAACLQ0CFwHVji0M4hcB4WItDRIXAdUGL" & _
+    "Q0iFwHUqi0NUhcB1E4XbdAiJHCTod8UAAInwWVtew5CJBCToaMUAAOvjjbYAAAAAiQQk6FjFAADrzI22AAAAAIkEJOhIxQAA67WNtgAAAACJxuukiQQk6MTFAACFwHSR6DvFAACDOB0PlMEPttFKCdbpe////4kcJOhSkAAAicbpZf///4kcJOjzKAAA6++QiQQk6PjEAADpMv///412AFdWU4PsEItcJCCLdCQkhdt0BoB7XHJ0DLj+////g8QQW15fw4tTOIP6/Q+EHwEAAIP6/w+EFgEAADHASnTfiXMMi1QkKIn3iVMQhdJ0QoN7eP90PA+2S3iNfgGIDotTfIn+/0MM/0sQg0NwAcdDeP////+DU3QAhdJ0FcdDOAEAAAC4AQAAAOuUjbQmAAAAAItTEIXSdHyJ9o28JwAAAACLQ1iFwA+FlQEAAItLBIXJdQuLUzyF0g+EIwEAAItTBDHJAVNoi1MQEUtsMckBU3ARS3THRCQEAAAAAIkcJOit" & _
+    "dgAAiUM4i1MEMckpU2iLUxAZS2wxySlTcBlLdIP4AXRYhcB1DotLPIXJdQeLUxCF0nWNi1MMiXQkBCnyiVQkCIt7TIk8JOgF7///iUNMi0MQOUQkKHQNi1wkKCnDidjp2f7//4tTOIP6/XQDQnXouP/////pxP7//4tLDIl0JAQp8YlMJAiLc0yJNCTov+7//4lDTItzDIkcJOjhCAAAO0NMdBHHQzj9////uP3////pbP///4kcJOjDCAAAiRwk6Jv3//+LUziF0g+FY////4kcJOgIaQAAx0QkCAAAAADHRCQEAAAAAMcEJAAAAADoXO7//4lDTItDOOki////kOgbwwAAxwAAAAAAi1NAx0QkCABAAADHRCQEAQAAAIlUJAyLS0SJDCTog8MAAIlDBIXAdRDHQzwBAAAAi0tA9kEMIHUKi1NEiRPpj/7//8dDOP/////p2f7//422AAAAAItzBDnWdgKJ1oX2dVeF0nUuKVQkKDHJi1QkKAFTaIt8"
+Private Const STR_ZLIB_5 As String = _
+    "JCgRS2wBU3ARS3SF/3UHx0M8AQAAAItEJCjpnv3//4tzQIlUJAjHRCQEAQAAAIl0JAyJPCTo9sIAAItTECnCiVMQ662LSwwB94sTiXQkCIkMJIlUJATotcIAAAEzi0sQKXMEiXsMKfGJyolLEOl7////jbQmAAAAAI28JwAAAACD7ByLTCQgjVQkG4lUJATHRCQIAQAAAIkMJOgB/f//D7ZMJBtID5TAg8QcD7bQSgnRicjDjbYAAAAAjb8AAAAAi1QkCIXSdAaAelxydAa4/////8ODfCQE/3Tzg3p4/3Xtg0Jw/4tMJASDUnT/iUp4McmDejgBD5TBhcmJSnx0B8dCOAAAAADHQjwAAAAAi0QkBMONtgAAAACNvCcAAAAAVVdWU4PsDItcJCSLbCQgi3QkKIXbid90RYX2fkGNdgBOhfZ+IMdEJAgBAAAAiVwkBIksJOhH/P//SHUJD7YTQ4D6CnXbxgMAOd90Con4g8QMW15fXcMxwIX2f/Lr7jHA" & _
+    "6+yNtCYAAAAAjbwnAAAAAFdWU4PsEItcJCCLfCQki3QkKIXbdAaAe1x3dAy4/v///4PEEFteX8OJO4X2iXMED4STAAAAjXQmAI28JwAAAACLUxCF0nUzi0tIi0NAiUsMiUQkDMdEJAgAQAAAx0QkBAEAAACJDCToRMEAAD0AQAAAdXfHQxAAQAAAi1MEMckBU2iLUxARS2wxyQFTcBFLdMdEJAQAAAAAiRwk6DAYAACJQziLUwQxySlTaItTEBlLbDHJKVNwGUt0hcB1C4tDBIXAD4V4////iXQkCIl8JASLe0yJPCToZev//4lDTInwi3MEKfDpN////8dDOP/////r1Y22AAAAAI28JwAAAAC4HBAAAOiWvwAAiZwkGBAAAIuUJCQQAACNjCQoEAAAiUwkDI1cJBDGhCQPEAAAAIlUJAjHRCQEABAAAIkcJOjNwAAAjUj/gfn+DwAAdwqAvCQPEAAAAHQQMcCLnCQYEAAAgcQcEAAAw4lcJASLnCQg" & _
+    "EAAAiUQkCIkcJOiB/v//69nrDZCQkJCQkJCQkJCQkJCD7ByLTCQkjVQkG4lUJATHRCQIAQAAAIhMJBuLTCQgiQwk6En+//8PtkwkG0gPlMCDxBwPttBKCdGJyMONdCYAg+wciVwkGItcJCSJHCToDcAAAIlEJAiLVCQgiVwkBIkUJOgJ/v//i1wkGIPEHMOQg+wMi1QkFIlcJAiLXCQQiVQkBIkcJOh1DAAAhcB0CItcJAiDxAzDi1NAiRQk6L6+AACLSzgxwIP5AQ+UwEghyOvdjbQmAAAAAI28JwAAAABXVlOD7BCLfCQgi1wkJIt0JCiF/4tUJCwPhLICAACD+gIPhKkCAACLRziD+P8PhJ0CAACD+P0PhJQCAACAf1x3D4SqAQAASg+EmAEAAIX2uv////+5/////w+IwQAAAItXWIXSD4UmAQAAi1d0i0dwOdYPjPgAAAB/CDnDD4LuAAAAKcMZ1onxCdl0C4tXSIXSD4S0AAAAifEJ2XQpg394" & _
+    "/3Qjg0dwAYtXfMdHeP////+DV3QAg8P/g9b/hdJ0B8dHOAEAAACF9n52jbYAAAAAhfa4AEAAAH5XiUQkCItPSIk8JIlMJATo1Pj//4XAuv////+5/////34mmSnDGdaF9n/NhfZ4BYP7AHfEi1dwi090jbQmAAAAAI28JwAAAACDxBCJ0InKW15fw5CNdCYAhfZ4CIH7/z8AAHedidjrmYX2eMiD+wB3h+vBxwQkAEAAAOh5vQAAiUdIhcC6/////7n/////D4Ur////67KJ9ok8JOhoAQAAhcC6/////7n/////D4n8/v//65SNdCYAx0d4/////4tXRMdHBAAAAACJF8dEJAwAAAAAiVwkBIl0JAiLT0CJDCToorUAAIXAuv////+5/////w+IUP///4lfcInaifGJd3SJX2iJd2zpO////wNfcBN3dOld/v//hdJ1BitfaBt3bIX2uv////+5/////w+IFP///4tXRIXSdHiF9n5pifaNvCcAAAAA" & _
+    "hfa4AEAAAH5HiUQkCItXRIk8JIlUJATodPv//4XAuv////+5/////w+E0v7//zHJKcMZzoX2f8iF9ngFg/sAd7+LV2iLT2zptP7//410JgCF9ngIgfv/PwAAd62J2OuphfZ43YP7AHeX69bHBCQAQAAA6Dm8AACJR0SFwLr/////uf////8PhHT+///HRCQIAEAAAMdEJAQAAAAAiQQk6Fy8AADpSv///420JgAAAAC6/////7n/////6UH+//+Qg+wciVwkGItcJCCF23QGgHtccnQNuP////+LXCQYg8Qcw8dDOAAAAACLU0THQzwAAAAAx0N4/////4kTx0MEAAAAAMdEJAgAAAAAx0QkBAAAAADHBCQAAAAA6LHm//+JQ0yLU1iF0nRCx0NoAAAAAMdDbAAAAADHQ3AAAAAAx0N0AAAAAMdEJAwAAAAAi0tki1NgiUwkCIlUJASLS0CJDCTo2rMAAOlv////iRwk6O1gAADrtI10JgCNvCcAAAAA" & _
+    "g+wci1QkIMdEJAwBAAAAx0QkBAAAAADHRCQIAAAAAIkUJOg5/P//g8Qcw5CNdCYAi0QkBIXAdAaAeFxydAMxwMOLSDyFyXQIuAEAAADDifaDeDgBD5TCD7bCw5CNdCYAi0QkBIXAdAaAeFxydAMxwMOLQFjDjXQmAI28JwAAAABWU4PsFItcJCCLQzyFwA+FHAIAAItDBIXAD4TBAQAAixNIiUMED7YyQokTi1M8uf////+F0nUXi0MEhcAPhDMBAABIiUMEiwMPtghAiQPB4QgBzoXSuf////91F4tDBIXAD4SpAAAASIlDBIsDD7YIQIkDweEQAc6F0rn/////dROLQwSFwHQoixNIiUMED7YKQokTg/n/dA2DxBTB4RgBzluJ8F7Dx0M4/f///+vqkOjruQAAxwAAAAAAi0tAx0QkCABAAADHRCQEAQAAAIlMJAyLU0SJFCToU7oAAIlDBIXAdR7HQzwBAAAAi1NA9kIMIHQHx0M4/////7n/////" & _
+    "65KLS0SJC+l8////jXQmAOiLuQAAxwAAAAAAi0tAx0QkCABAAADHRCQEAQAAAIlMJAyLU0SJFCTo87kAAIlDBIXAdSTHQzwBAAAAi1NA9kIMIHQHx0M4/////4tTPLn/////6Qv///+LS0SLUzyJC+ny/v//6Ca5AADHAAAAAACLU0DHRCQIAEAAAMdEJAQBAAAAiVQkDItLRIkMJOiOuQAAiUMEhcB1JMdDPAEAAACLS0D2QQwgdAfHQzj/////i1M8uf/////pgf7//4tLRItTPIkL6Wj+//+NtgAAAADou7gAAMcAAAAAAItLQMdEJAgAQAAAx0QkBAEAAACJTCQMi1NEiRQk6CO5AACJQwSFwHUmx0M8AQAAAItzQPZGDCB0DMdDOP////+QjXQmAL7/////6fH9//+LS0SJC+nb/f//jbYAAAAAjb8AAAAAg+wciVwkDItcJCCJdCQQiXwkFIXbiWwkGA+EkAAAAIB7XHd0HIlcJCCLdCQQi1wk" & _
+    "DIt8JBSLbCQYg8Qc6R/y///HRCQEBAAAAIkcJOh/BQAAhcB10ItrQL8DAAAAi3NMiWwkBInygeL/AAAAiRQkwe4I6Cm4AABPeeaLa0C/AwAAAItzaI10JgCNvCcAAAAAiWwkBInygeL/AAAAiRQkwe4I6Pm3AABPeebpdv///4tcJAy4/v///4t0JBCLfCQUi2wkGIPEHMMAOiAAjXQmAIPsHItEJCSJdCQUi3QkIIlcJBCJfCQYhfYPhOEAAACLVjiF0okQuBhTuGEPhI8AAABCD4SsAAAAi34Yhf90BYA/AHURi0Y4ugIAAAApwos8laCvuGGLRlCFwHV7i15UiRwk6Pm3AACJPCSJw+jvtwAAjUwYA4kMJOgTtwAAiUZQhcB0TItOVIkEJIlMJATovbcAAMdEJAQZU7hhi1ZQiRQk6Aq3AACJfCQEi35QiTwk6Pu2AACLRlCQjbQmAAAAAItcJBCLdCQUi3wkGIPEHMOhuK+4YevpiQQk6JG2AADp" & _
+    "eP///+iXtgAAixCJFCTozbYAAInH6UH///+NtgAAAADHAP7///+hsK+4YeuzjXYAi0QkBIXAdCCDeDgBdAfHQDgAAAAAx0A8AAAAAItQQIlUJATpaLYAAMMxLjIuMwAlYyVjJWMlYyVjJWMlYyVjJWMlYwCNtgAAAACNvwAAAABVMe1XVlOB7JwAAACLlCSwAAAAx0QkPP////+LnCS0AAAAjXwkQIXSD4SYAgAAhdsPhJACAADHBCSAAAAA6O61AACJxjHAhfYPhPIBAADHRiAAAAAAx0YkAAAAAMdGKAAAAADHRkQAAAAAxwYAAAAAx0ZIAAAAAMdGDAAAAADHRhAAAAAAx0YEAAAAAMdGQAAAAADHRjgAAAAAx0Y8AAAAAMdGaAAAAADHRmwAAAAAx0ZwAAAAAMdGdAAAAADHRnj/////x0QkCAAAAADHRCQEAAAAAMcEJAAAAADocOD//4lGTIuUJLAAAADHRlAAAAAAx0ZYAAAAAIkUJOgAtgAA" & _
+    "QIkEJOgntQAAiUZUhcAPhKoBAACJBCSLjCSwAAAAiUwkBOjJtQAAxkZcAJCNdCYAD7YTgPpyD4RUAgAAgPp3D4Q7AgAAgPphD4QyAgAAiNGA6TCA+QkPh+gBAAAPvsqD6TCJTCQ8Q4TSdAuNlCSQAAAAOdd1ug+2RlyEwA+EPAEAADx3D4RfAQAAxwQkAEAAAOiatAAAiUZEiQbHRCQMOAAAAMdEJAhZVLhhx0QkBPH///+JNCToJVsAAIXAD4X7AAAAi15EhdsPhPAAAADHRhAAQAAA6Ea0AADHAAAAAACLjCS4AAAAhckPiN4AAACLhCS4AAAAjWwkQIlsJASJBCTo2rMAAIlGQIXAD4StAAAAgH5cd3Q0iTQkMf/oP+j//4tOQIkMJOgkrQAAi14EKdgZ+olGYIlWZInwkI10JgCBxJwAAABbXl9dw8dEJCwLAAAAx0QkKAAAAADHRCQkAAAAAMdEJCAAAAAAx0QkHAAAAADHRCQYAAAAAMdEJBQA"
+Private Const STR_ZLIB_6 As String = _
+    "AAAAx0QkEAgAAADHRCQMiwAAAMdEJAgfAAAAx0QkBF9UuGGJBCToNbQAAMdGYAoAAADHRmQAAAAA6Xv///+JNCToau3//zHA6XP///+LvCSwAAAAjVQkQIlUJASJPCToLLQAAOkd////x0QkHDgAAACLRCQ8x0QkGFlUuGGJbCQUx0QkEAgAAADHRCQM8f///8dEJAgIAAAAiUQkBIk0JOh7AwAAxwQkAEAAAInH6P2yAACJRkiF/4lGDHWBhcDphP7//4D6ZnQngPpodBeA+lJ0CIgXR+kL/v//vQMAAADpAf7//70CAAAA6ff9//+QvQEAAADp7P3//422AAAAAMZGXHfpxf3//420JgAAAADGRlxy6aP9//+NtCYAAAAAVVcx/1ZTg+wci1wkMItsJDSF23QGgHtcd3QNuP7///+DxBxbXl9dw8dDBAAAAACLUxCNtCYAAAAAjbwnAAAAALkAQAAAic4p1nV1hf91aot7EDHJAXtwEUt0Mf+JbCQE" & _
+    "iRwk6NgJAACJQziLUxApU3AZe3SF9nUFg/j7dDOLcxAx/4X2ifJ1H4tDOIP4AXQQg/gBdquD+AF1hjHA64KJ9r8BAAAA6+mLQzjr9I10JgDHQzgAAAAA68SLQzjr14n2i0tAiXQkCMdEJAQBAAAAiUwkDItTSIkUJOhCsgAAOfB1EsdDEABAAACLU0iJUwzpV////8dDOP////+4/////+kb////kJCQkJCQkJCQkJAxLjIuMwCNdgCNvCcAAAAAg+xci1QkYIl8JFiLfCRkiVwkUItMJGyJdCRUi1wkaI10JBCJVCQcixeJXCQQiUwkFIlUJCDHRCQwAAAAAMdEJDQAAAAAx0QkCDgAAADHRCQEMFm4YYk0JOjDWAAAhcB0EItcJFCLdCRUi3wkWIPEXMPHRCQEBAAAAIk0JOhvYwAAg/gBicN0JYk0JOgAfAAAg/sCdBGD+/t0BInY68OLdCQUhfZ19Lj9////67SLVCQkiReJNCTo1XsAAOukkJCQ" & _
+    "IGRlZmxhdGUgMS4yLjMgQ29weXJpZ2h0IDE5OTUtMjAwNSBKZWFuLWxvdXAgR2FpbGx5IACNdCYAjbwnAAAAAAAAAAAAAAAAYHK4YQQABAAIAAQA0HS4YQQABQAQAAgA0HS4YQQABgAgACAA0HS4YQQABAAQABAA4Hm4YQgAEAAgACAA4Hm4YQgAEACAAIAA4Hm4YQgAIACAAAAB4Hm4YSAAgAACAQAE4Hm4YSAAAgECAQAQ4Hm4YZCNtCYAAAAAg+wsi1QkPMdEJBQAAAAAi0wkOMdEJBAIAAAAiVQkHItUJDSJTCQYx0QkDA8AAACJVCQEi1QkMMdEJAgIAAAAiRQk6BkAAACDxCzDMS4yLjMA6w2QkJCQkJCQkJCQkJCQg+wsi0QkRIlcJByLVCQ0iXQkIItMJDi7AQAAAIlEJBSLdCQ8i0QkSIl8JCSLfCQwhcCJbCQoi2wkQIlUJBiLVCRMdAWAODF0Gbj6////i1wkHIt0JCCLfCQki2wkKIPE" & _
+    "LMOD+jh14oX/uP7///903sdHGAAAAACLVyCF0nUOx0cgELC4YcdHKAAAAACLVySF0nUHx0ckMLC4YYN8JBj/D4QZAgAAhfYPiAgCAACD/g9+CLsCAAAAg+4QjVX/g/oIdwWD+Qh0B7j+////64CD/gd+9IP+D3/vi0wkGIXJeOeDfCQYCX/gi0QkFIXAeNiDfCQUBH/Rg/4ID4SsAQAAx0QkCMAWAADHRCQEAQAAAItXKIkUJP9XIIlEJBCLTCQQuPz///+FyQ+EIf///4tEJBCJ8YlYGLsBAAAAidqJcDDT4ot0JBCJRxyNTQeJOMdAHAAAAACJ2NPgiVYsSolWNInCSolOUI1NCYlGTLirqqqqiVZU9+GLRCQQ0eqJUFjHRCQIAgAAAItwLIl0JASLVyiJFCT/VyCLTCQQiUE4x0QkCAIAAACLcSyJdCQEi08oiQwk/1cgi1QkEIlCQMdEJAgCAAAAi3JMiXQkBItXKIkUJP9XIIt0JBCNTQbT44me" & _
+    "nBYAAIlGRMdEJAgEAAAAi46cFgAAiUwkBItfKIkcJP9XIItcJBCLk5wWAACJQwiLcziNLJUAAAAAiWsMhfZ0ZYtrQIXtdF6Lc0SF9nRXhcB0U4nVjRxSg+X+jXQFAItUJBiLbCQQibWkFgAAjTQDi0QkFIm1mBYAAImVhAAAAImFiAAAAMZFJAiLXCQciXwkMIt0JCCLfCQki2wkKIPELOmrAQAAi0wkEIsduK+4YcdBBJoCAACJXxiJPCTovxAAALj8////6aP9//++CQAAAOlK/v//Mdv33un8/f//x0QkGAYAAADp2v3//5CNdCYAVVdWU4PsLIt8JECLdCRIi2wkRIX/iXQkKA+EMQEAAItfHIXbD4QmAQAAhe0PhB4BAACLQxiD+AIPhBIBAABID4T+AAAAi0MYhcAPhdgAAAAxwIP+Ag+GxQAAAItDLC0GAQAAOcZ2CIlEJCgpxgH1i0s4iWwkBIt0JCiJDCSJdCQI6JqsAACLeziLbCQoi0NY" & _
+    "iXwkEItTVIlrbIjBiWtcD7Y3iUQkJIlzSNPmi0s0D7ZHAYt8JCiJVCQgiUwkGDHGg+8DiXwkHItDQCHWiXNIi3tEMfaJRCQUkI20JgAAAAAPtkwkJItDSItUJBCLbCQg0+APtkwWAjHIIegPtxRHiUNIi0wkGItsJBQh8WaJVE0AZok0R0Y7dCQcdsQxwIn2g8QsW15fXcOJdCQIiWwkBItXMIkUJOhVsv//iUcw6Q3///+DewQqD4T4/v//jXYAuP7////ryYn2jbwnAAAAAIPsHIl0JBiLdCQgiVwkFIX2dB2LXhyF23QWi1YghdJ0D4tWJIXSdRmQjbQmAAAAALj+////i1wkFIt0JBiDxBzDx0YsAgAAAItLCItTGMdGFAAAAADHRggAAAAAhdLHRhgAAAAAx0MUAAAAAIlLEHhxMcmF0g+UwUmD4bmDwXGD+gKJSwR0PcdEJAgAAAAAx0QkBAAAAADHBCQAAAAA6I2x//+JRjDHQygAAAAAiRwk" & _
+    "6Is7AACJHCTooxEAADHA6XH////HRCQIAAAAAMdEJAQAAAAAxwQkAAAAAOig1f//68GJ0ffZicqJSxjrhI12AItEJASFwHQYi1AchdJ0EYN6GAJ1C4tMJAgxwIlKHMOQuP7////DjXYAjbwnAAAAAFOLRCQIi1wkEIXAdAeLUByF0nUMuP7///9bw5CNdCYAi0wkDLgBAAAAiYq8FgAAD7ZMJAzT4EghwzHAZomauBYAAOvVjbYAAAAAjb8AAAAAg+wciXwkFIt8JCCJXCQMi1wkJIX/iWwkGItsJCiJdCQQx0QkCAAAAAB0JYt3HIX2dB6D+/8PhMUAAACD+wl3EIXteAyD/QR+J420JgAAAAC4/v///4tcJAyLdCQQi3wkFItsJBiDxBzDjbQmAAAAAIuOhAAAAI0UW4sUlUhauGGNBEk5FIVIWrhhdAeLVwiF0nVQOdl0PYmehAAAAI08W8HnAg+3j0JauGEPt59AWrhhD7eXRFq4YYmOgAAAAA+3" & _
+    "j0ZauGGJnowAAACJlpAAAACJTnyJrogAAACLRCQI6XL////HRCQEAQAAAIk8JOitAAAAiUQkCIuOhAAAAOuUkLsGAAAA6TH///+NtgAAAACLRCQEhcB0B4tQHIXSdQa4/v///8OLTCQIMcCJiowAAACLTCQMiYqAAAAAi0wkEImKkAAAAItMJBSJSnzDjXYAU4tMJAyLXCQIjUEHwegDjRQIjUE/wegGhduNRBALdBCLUxyF0nQJg3owD3QFjXYAW8ODelAPdfiJTCQIW+lOs///jbQmAAAAAI28JwAAAABVV1ZTg+wci2wkMIXtD4T9CwAAi30chf8PhPILAACDfCQ0BA+P5wsAAItUJDSF0g+I2wsAAItVDIXSD4S8CwAAi0UAhcB1C4tNBIXJD4WqCwAAi0cEPZoCAACJwg+EjwsAAIt1EIX2D4QrAwAAiS+LdyiD+iqLXCQ0iXQkGIlfKA+EIAgAAIP4RQ+ElwYAAIt3FIP4SQ+EWgUAAIP4Ww+E" & _
+    "LgQAAIP4Zw+EYwMAAIX2D4Q1AwAAi00ci0UQi1kUOcN2AonDhdsPhd8CAACFwHUYx0co/////zHAjbQmAAAAAIPEHFteX13Di0UEi1cEgfqaAgAAD4SWAgAAhcB1F4t3dIX2dRCLTCQ0hcl0TIH6mgIAAHREi5eEAAAAiTwki0wkNI00UolMJAT/FLVIWrhhjVj+icKD+wF3B8dHBJoCAACF0g+ENwIAAIP6Ag+ELgIAAEoPhGABAAAxwIN8JDQED4V6////i1cYuAEAAACF0g+Oav///4P6Ag+ErQAAAItNMIt3FItXCInLwekYwesQiAwWi3cUi08IRol3FIgcDot3FItPCA+3XTBGiXcUidrB6giIFA6LdxSLVwhGiXcUiBwW/0cUi00ci0UQi1kUOcN2AonDhdt1GotHGIXAfgX32IlHGDHAg38UAA+UwOnt/v//i3UMi1EQiVwkCIk0JIlUJATop6YAACldEItVHAFdDAFdFItqFAFaECndhe2J" & _
+    "ahR1tYtaCIlaEOutD7ZNMIt3FItXCIgMFot3FItdMItPCEbB6wiJdxSIHA6LdxSLXwgPt1UyRol3FIgUHot3FItfCA+2TTNGiXcUiAwei18Ui08ID7ZVCEOJXxSIFAuLXxSLVQiLdwhDweoIiV8UiBQzi18Ui3cID7dNCkOJXxSIDDOLdxSLTwgPtlULRol3FIgUDukK////g3wkNAEPhK0AAADHRCQMAAAAAMdEJAgAAAAAx0QkBAAAAACJPCTofCgAAIN8JDQDdFyLTRyLRRCLWRQ5w3YCicOF23UNhcAPhVP+///pxf3//4t1DItREIlcJAiJNCSJVCQE6I+lAAApXRCLVRwBXQwBXRSLchQBWhAp3oX2iXIUdQaLWgiJWhCLRRDrt4tXTIt3RI1MEv5mx0RW/gAAiUwkCMdEJAQAAAAAiTQk6DSlAADpev///4k8JOjHKAAA6W3///+J9otdEIXbD4VM/f//6UD9//+FwA+EZv3//4s9vK+4Ybj7"
+Private Const STR_ZLIB_7 As String = _
+    "////iX0Y6TX9//+LdQyLURCJXCQIiTQkiVQkBOjvpAAAKV0Qi1UcAV0MAV0Ui3IUAVoQKd6F9olyFHUGi0oIiUoQi0UQ6eL8//+LRQSFwA+F9vz//4tcJBg5XCQ0D4/o/P//g3wkNAQPhN38///riItXHItaLIXbdGqLVwyNTgI50XYTi00ci0UQi1kUOcN2AonDhdt1WY1OAjnRD4dr/P//D7ZdMItPCIgcDot3FItVMItfCEbB6giJdxSIFB7/RxTHRCQIAAAAAMdEJAQAAAAAxwQkAAAAAOjyzv//iUUwi3cUx0cEcQAAAOkd/P//i3UMi1EQiVwkCIk0JIlUJAToCqQAACldEItVHAFdDAFdFItyFAFaECnehfaJchR1BotaCIlaEIt3FItXDOll////i18ci1MkhdJ0Q4nxifY7dwx0e4tXIItDJA+2HAJCiVcgi1cIiBwWi0cUQIlHFIXbdAeLXxyJxuvVicaLRxyLUCyF0nQEOc53HYXbdRHH" & _
+    "RwRnAAAAuGcAAADpdPv//4tHBOls+///Kc6JdCQIi0cIAcGJTCQEi00wiQwk6B7O//+JRTCLdxTrwY22AAAAAItTLIXSdAQ5zndoi00ci0UQi1kUOcN2AonDhdt1HIt3FDt3DInxdAiLXxzpVf///7sBAAAA6XP///+LURCLdQyJXCQIiVQkBIk0JOgAowAAKV0Qi1UcAV0MAV0Ui0oUAVoQKdmFyYlKFHWzi1oIiVoQ66spzol0JAiLdwgB8YlMJASLXTCJHCTog83//4lFMOl2////i18ci1MchdJ0V4nx6w2QkJCQkJCQkJCQkJCQO3cMdHyLVyCLQxwPthwCQolXIItXCIgcFotHFECJRxSF23QHi18cicbr1YnGi0cci1AshdJ0BDnOdySF23UYx0cgAAAAAMdHBFsAAAC4WwAAAOk0+v//i0cE6Sz6//8pzol0JAiLdwgB8YlMJASLTTCJDCTo58z//4lFMIt3FOu6i0MshcB0BDnOd2iLTRyL" & _
+    "RRCLWRQ5w3YCicOF23Uci3cUO3cMifF0CItfHOlU////uwEAAADpcv///4tREIt1DIlcJAiJVCQEiTQk6M+hAAApXRCLVRwBXQwBXRSLShQBWhAp2YXJiUoUdbOLWgiJWhDrqynOiXQkCItfCAHZiUwkBIt1MIk0JOhSzP//iUUw6Xb///+LXxyLSxCJXCQQhckPhF0BAAAPt1MUi3cUOVcgiXQkFHNEkI20JgAAAAA7dwwPhJcAAACLRyCLUxCLTwgPthwQiBwOi08Ui1cgi18cQUKJTxSJzolXIA+3QxSJXCQQOcJzBInO68SLSyyFyXQGO3QkFHcoi0sUOU8gdAiLRwTp6fj//8dHIAAAAAC4SQAAAMdHBEkAAADp0fj//4tcJBQp3ol0JAiLVwgBVCQUi0QkFIlEJASLdTCJNCToi8v//4lFMIt3FItfHOupi0wkEItZLIXbdAY7dCQUd2iLTRyLRRCLWRQ5w3YCicOF23Uci3cUO3cMiXQkFHQI" & _
+    "i18c6TH///+LXxzpXP///4tREIt1DIlcJAiJVCQEiTQk6GqgAAApXRCLVRwBXQwBXRSLShQBWhAp2YXJiUoUdbOLWgiJWhDrq4tUJBQp1ol0JAiLXwgBXCQUi0QkFIlEJASLdTCJNCTo48r//4lFMOls////x0cESQAAALhJAAAA6en3//+DfxgCD4QQAQAAi1cwg+oIweIMg7+IAAAAAY2aAAgAAA+OxwAAADHAweAGCcOLR2yFwHQDg8sgx0cEcQAAALiFEEII9+Mp09HrjQQawegEi1cIicbB5gUpxo1eH4t3FInZwekIiAwWi3cUi1cIRol3FIgcFotfFItPbEOFyYlfFHREi1Uwi3cIidHB6hjB6RCIFDOLXxSLdwhDiV8UiAwzi3cUi08ID7ddMEaJdxSJ2sHqCIgUDotPFItXCEGJTxSIHBH/RxTHRCQIAAAAAMdEJAQAAAAAxwQkAAAAAOiYpf//iUUwi0cE6fP2//+Ll4QAAACD+gEPjir/" & _
+    "//+D+gW4AQAAAA+OHv///zHAg/oGD5XAg8AC6Q7////HRCQIAAAAAMdEJAQAAAAAxwQkAAAAAOiUyf//iUUwi08Ui0cIxgQBH4tfFIt3CEOJXxTGBDOLi08Ui1cIQYlPFMYEEQiLRxSLVxyNSAGF0olPFA+FjgAAAItfCLACxgQZAItPFItXCEGJTxTGBBEAi18Ui3cIQ4lfFMYEMwCLTxSLVwhBiU8UxgQRAItfFIt3CEOJXxTGBDMAi1cUi18IjUoBg8ICiVcUi5eEAAAAg/oJdAuDv4gAAAABfiOwBIgEGYtHCIt3FMYEBgu4cQAAAP9HFMdHBHEAAADp5vX//zHASn/a69aDwAKLXwiJRxSLciwxwIM6AA+VwIX2dAODwAKLchCF9nQDg8AEi3IchfZ0A4PACItyJIX2dAODwBCIBBmLdxywAotfFItXCA+2TgSIDBOLdxyLXxSLVwiLTgRDiV8UwekIiAwTi3cci18Ui08ID7dWBkOJXxSIFAuL" & _
+    "dxyLXxSLTwgPtlYHQ4lfFIgUC4tXFItfCI1KAYPCAolXFIuXhAAAAIP6CXQPg7+IAAAAAQ+OiQAAALAEiAQZi3cci18Ui1cID7ZODIgME4tfHItPFItDEEGJTxSFwHQmD7ZTFIt3CIgUMYtfFIt3HItXCEOJXxSLThTB6QiIDBOLXxz/RxSLQyyFwHUYx0cgAAAAALhFAAAAx0cERQAAAOnB9P//i3cUiXQkCItPCIlMJASLXTCJHCToksf//4lFMOvKMcBKD49w////6Wn///+DfCQ0BA+EZvT//4sdsK+4YYldGI10JgCNvCcAAAAAuP7////pxvT//422AAAAAIPsHIlcJBSLXCQgiXQkGIXbdAmLUxyF0onRdRS4/v///4tcJBSLdCQYg8Qcw412AItyBIP+KnQog/5FdCOD/kl0HoP+W3QZg/5ndBSD/nF0D4H+mgIAALj+////dcOJ9otBCIXAdW+LQkSFwHVWi0JAhcB1PYtCOIXAdSSJVCQE" & _
+    "i0soiQwk/1Mkx0McAAAAADHbg/5xD5XDjURb/euDifaJRCQEi1MoiRQk/1Mki1Mc68qJRCQEi0soiQwk/1Mki1Mc67GJRCQEi1MoiRQk/1Mki1Mc65iJRCQEi1MoiRQk/1Mki1Mc6Xz///+QjXQmAIPsLIl0JCCLdCQ0iVwkHItcJDCF9ol8JCSJbCQodAuF23QHi24che11Gbj+////i1wkHIt0JCCLfCQki2wkKIPELMP8uQ4AAACJ3/Olx0QkCMAWAADHRCQEAQAAAItTKIkUJP9TIIlEJBiLTCQYuPz///+FyXS49kQkGASJ6ItMJBi6wBYAAInPiUscdBCLVQCDxwSNRQSJEbq8FgAA/InRwekCicbzpYtUJBiJGsdEJAgCAAAAi3osiXwkBItzKIk0JP9TIIt0JBiJRjjHRCQIAgAAAItWLIlUJASLSyiJDCT/UyCJRkDHRCQIAgAAAIt+TIl8JASLUyiJFCT/UyCJRkTHRCQIBAAAAIuOnBYA" & _
+    "AIlMJASLeyiJPCT/UyCLTjiFyYnHiUYID4TyAAAAi1ZAhdIPhOcAAACLRkSFwA+E3AAAAIX/D4TUAAAAi0QkGIt1OItYLIl0JASJDCQB24lcJAjoOJoAAIt0JBiLTUCLViyLXkCJTCQEAdKJVCQIiRwk6BmaAACLVkyLTUSLXkQB0olUJAiJTCQEiRwk6P6ZAACLTQiLXgiLVgyJTCQEiRwkiVQkCOjlmQAAi00Qi0UIi14IKcGNLBkxwIluEIuunBYAAInpg+H+jRQ5jUxtAImWpBYAAAHLifeJnpgWAACJ9YHHlAAAAIm+GAsAAInzgcWICQAAia4kCwAAgcN8CgAAiZ4wCwAA6RL+//+NdgCJHCTo6Pz//7j8////6f39//+NtCYAAAAAjbwnAAAAAIPsHIlcJBiLXCQgi0ssi0NMAcmNVAD+iUs8i0tEZsdEQf4AAIlUJAiJDCTHRCQEAAAAAOgYmQAAx0NsAAAAAIuThAAAAMdDXAAAAADHQ3QA" & _
+    "AAAAjQxSweECD7eRQlq4YcdDeAIAAADHQ2ACAAAAx0NoAAAAAImTgAAAAA+3kUBauGHHQ0gAAAAAiZOMAAAAD7eRRFq4YYmTkAAAAA+3kUZauGGJU3yLXCQYg8Qcw4n2Vb3//wAAV1ZTg+wci3wkMItHDIPoBTnFdgaJxY10JgCLR3SD+AEPhmQBAADHR3QAAAAAi09sAciJR2yLT1yFwI1UDQB0BDnQclaJV2wp0CnKiUd0McCFycdEJAwAAAAAiVQkCHgFi0c4AciJRCQEiTwk6GkeAACLN4tXbItOHIlXXItGEItZFDnDdgKJw4XbD4W6AAAAi0YQhcB0YotPXItXbIt3LCnKge4GAQAAOfIPgmr////HRCQMAAAAADHAhcmJVCQIeAWLRzgByIlEJASJPCToBx4AAItPbIs3iU9ci04ci0YQi1kUOcN2AonDhdt1HItWEIXSD4Uh////McCDxBxbXl9dw420JgAAAACLVgyLQRCJXCQIiRQkiUQk" & _
+    "BOiKlwAAKV4Qi1YcAV4MAV4Ui3IUAVoQKd6F9olyFHUGi1oIiVoQizfrqZCNdCYAi1YMi0EQiVwkCIkUJIlEJAToSpcAACleEItWHAFeDAFeFItyFAFaECnehfaJchR1BotaCIlaEIs36Qj///+J9ok8JOgoDAAAi0d0hcAPhYn+//+LVCQ0McCF0g+EUP///zHJg3wkNAQPlMExwIlMJAyLV1yLb2wp1YXSiWwkCHgFi0c4AdCJRCQEiTwk6P4cAACLd2yJd1yLN4tOHItGEItZFDnDdgKJw4XbdTKLfhCF/3URMcCDfCQ0BA+UwAHA6ez+//+DfCQ0BLgDAAAAD4Tc/v//uAEAAADp0v7//4tuDItREIlcJAiJLCSJVCQE6GuWAAApXhCLVhwBXgwBXhSLahQBWhAp3YXtiWoUdQaLWgiJWhCLN+uTjbYAAAAAVVdWU4PsPIt8JFDHRCQ4AAAAAI22AAAAAI28JwAAAACLb3SB/QUBAAAPhgYEAACD"
+Private Const STR_ZLIB_8 As String = _
+    "/QJ2PItXSItPWIt3ONPii09sD7ZcMQKLd1Qx2iHyi180i3dEiVdIIdmLX0APtwRWZokESw+3T2yJRCQ4ZokMVotUJDiF0nQ4i19si0QkOIt3LInZKcGB7gYBAAA58Xcgi5eIAAAAjXL+g/4BD4d+AwAAg/oDD4S7AgAAkI10JgCDf2ACD4ZKAgAAD7dfbIu3pBYAAIuXmBYAAA+3R3APtk9gKcMPt+uLn6AWAACA6QNmiSxejXX/D7bpiAwTD7fe/4egFgAAD7a1wIu4YQ+3lLeYBAAAQmaB+/8AZomUt5gEAAAPh9oBAAAPtoPAibhhZoH7/wCNFIWACQAAD4eyAQAAD7aDwIm4YY0MhYAJAAAPt1wPCENmiVwXCIu3nBYAAItHYE45t6AWAAAPlMIPtuqLV3SJbCQ0KcI7h4AAAACJV3QPhzkBAACD+gIPhjABAACLd1hIi184iUdgi1dUi280iXQkJItHQIt3RIlcJCyJVCQoiWwkMIlEJByNdCYA" & _
+    "D7ZMJCSLV0iLX2zT4otMJCyNawGJb2wPtkQNAotMJDAxwotEJCghzYtMJBwhwg+3BFaJV0hmiQRpi09gD7dvbIlEJDhJhclmiSxWiU9gdbCNUwKJV2yNdgCNvCcAAAAAi0wkNIXJD4QE/v//x0QkDAAAAAAxwItXXIt3bCnWhdKJdCQIeAWLRzgB0IlEJASJPCToKRoAAIs3i1dsi04ciVdci0YQi1kUOcN2AonDhdt1FYtGEIXAD4Wz/f//McCDxDxbXl9dw4tuDItREIlcJAiJLCSJVCQE6LOTAAApXhCLVhwBXgwBXhSLahQBWhAp3YXtiWoUdQaLWgiJWhCLN+uwx0dgAAAAAItXbItPWItfVAHCi0c4iVdsD7Y0Aol3SNPmD7ZsAgEx7iHeiXdI6Sz////B6wcPtoPAirhh6Ub+//+J2cHpBw+2gcCKuGHpHP7//4tvbItHOIu3oBYAAIufpBYAAIuXmBYAAA+2TAUAZscEcwAAD7bZiAwW/4eg" & _
+    "FgAAD7esn5QAAABFZomsn5QAAACLt5wWAABOObegFgAAD5TC/090/0dsD7bKiUwkNOmq/v//SQ+FQ/3//4tHOIt0JDiNFAONDAYPtgKNmgIBAAA4AXQNuAIAAACJR2DpHP3//w+2QgE4QQF16oPCAoPBAkFCD7YBOAJ1Q0FCD7YBOAJ1OkFCD7YBOAJ1MUFCD7YBOAJ1KEFCD7YBOAJ1H0FCD7YBOAJ1FkFCD7YBOAJ1DUFCD7YBOAJ1BDnacrQp07gCAAAAugIBAAAp2oP6An6Ki0wkODnqidCJT3APhnn///+J6Oly////jbYAAAAAiTwki2wkOIlsJATowAgAAOlX////iTwk6BMHAACLb3SB/QUBAAB3DotMJFQxwIXJD4QZ/v//he0PhdH7//8x0oN8JFQED5TCMcCJVCQMi1dci09sKdGF0olMJAh4BYtHOAHQiUQkBIk8JOjhFwAAi3dsiXdcizeLThyLRhCLWRQ5w3YCicOF23Uri34Qhf91" & _
+    "ETHAg3wkVAQPlMABwOmt/f//McmDfCRUBA+UwY1ECQHpmv3//4tuDItREIlcJAiJLCSJVCQE6FWRAAApXhCLVhwBXgwBXhSLahQBWhAp3YXtiWoUdQaLWgiJWhCLN+uaVVdWU4PsHIt8JDDHRCQYAAAAAI22AAAAAI28JwAAAACLV3SB+gUBAACJVCQQD4bVBAAAg3wkEAIPhsIEAACLXziLb2yLV0iLT1gPtnQdAotfNNPii09UMfKJ7iHeIcqLX0SJV0iLT0APtwRTZokEcQ+3d2yJRCQYZok0U4tEJBiLV2DHR2ACAAAAi09whcCJV3iJT2R0WTuXgAAAAHNRi3QkGInpi1csKfGB6gYBAAA50Xc8i5eIAAAAjVr+g/sBD4ceBAAAg/oDD4RcAwAAi0dgg/gFdxmDv4gAAAABD4Q7AwAAg/gDD4QfAwAAjXYAi0d4g/gCD4YEAgAAOUdgD4f7AQAAD7dfbItPdIuXpBYAAA+3R2QBzYPtAw+2T3gp" & _
+    "w0sPt/OLn6AWAACA6QNmiTRai5eYFgAAiAwTjVb/D7bx/4egFgAAD7faD7aOwIu4YQ+3lI+YBAAAQmaB+/8AZomUj5gEAAAPh4IBAAAPtoPAibhhZoH7/wCNFIWACQAAD4daAQAAD7aDwIm4YY0chYAJAAAPt0wfCEFmiUwXCIu3nBYAAItXdE45t6AWAAAPlMMPtsuLX3iJTCQUKdpCiVd0g+sCiV94kI20JgAAAACLd2xGOe6Jd2x3OYtXSItPWItHNNPii084D7ZcDgKLT1QhxjHai19EIcqJV0iLT0APtwRTZokEcQ+3d2yJRCQYZok0U4tXeEqF0olXeHWxx0doAAAAAItHbItsJBTHR2ACAAAAQIXtiUdsD4Tg/f//x0QkDAAAAACLV1wp0IlEJAgxwIXSeAWLRzgB0IlEJASJPCTo+BQAAIsfi3dsi0sciXdci0MQi3EUOcZ2AonGhfZ1Io22AAAAAI28JwAAAACLQxCFwA+Fhf3//zHAg8Qc" & _
+    "W15fXcOLawyLURCJdCQIiSwkiVQkBOh1jgAAKXMQi1McAXMMAXMUi1oUAXIQKfOF24laFHUGi0oIiUoQix/rsMHrBw+2g8CKuGHpnv7//4newe4HD7aGwIq4Yel0/v//i3dohfYPhOwAAACLVziLj6AWAACLt5gWAAAPtlwV/4uvpBYAAGbHRE0AAAAPtuuIHDH/h6AWAAAPt5SvlAAAAEJmiZSvlAAAAIufnBYAAEs5n6AWAAAPhZQAAADHRCQMAAAAADHAi1dci19sKdOF0olcJAh4BYtHOAHQiUQkBIk8JOjZEwAAix+Lb2yLSxyJb1yLQxCLcRQ5xnYCicaF9nUO/090jU0BiU9s6eD+//+LURCLawyJdCQIiVQkBIksJOhqjQAAKXMQi1McAXMMAXMUi0oUAXIQKfGFyYlKFHUPi3IIiXIQifaNvCcAAAAAi29six/rq/9PdI1dAcdHaAEAAACJX2zpFPz//4tHcInuKcaB/gAQAAAPhtH8///H" & _
+    "R2ACAAAA6cX8//9JD4Wd/P//i0c4i3QkGI1UBQCNDAYPtgKNmgIBAAA4AXQNuAIAAACJR2Dpdfz//w+2QgE4QQF16oPCAoPBAkFCD7YBOAJ1Q0FCD7YBOAJ1OkFCD7YBOAJ1MUFCD7YBOAJ1KEFCD7YBOAJ1H0FCD7YBOAJ1FkFCD7YBOAJ1DUFCD7YBOAJ1BDnacrQp07gCAAAAugIBAAAp2oP6An6KO1QkEInQi0wkGIlPcA+Gd////4tEJBDpbv///4k8JItsJBiJbCQE6OwCAACJR2CLb2zp0Pv//5CLb2zpdPv//4k8JOgwAQAAi0d0PQUBAACJRCQQdw6LTCQ0McCFyQ+Ecf3//4tUJBCF0g+F+/r//4tvaIXtdEeLT2yLRziLt6QWAACLr5gWAAAPtlwB/4uPoBYAAGbHBE4AAA+284gcKf+HoBYAAA+3lLeUAAAAQmaJlLeUAAAAx0doAAAAADHSg3wkNAQPlMIxwIlUJAyLV1yLX2wp04XS" & _
+    "iVwkCHgFi0c4AdCJRCQEiTwk6KkRAACLH4tvbItLHIlvXItDEItxFDnGdgKJxoX2dSuLexCF/3URMcCDfCQ0BA+UwAHA6bP8//8x24N8JDQED5TDjUQbAemg/P//i1EQi2sMiXQkCIlUJASJLCToHYsAAClzEItTHAFzDAFzFItKFAFyECnxhcmJShR1BotyCIlyEIsf65qQjbQmAAAAAFVXVlOD7ByLbCQwi30si1V0ifiNtgAAAACNvCcAAAAAi3U8jYw4+v7//4tdbCnWKd45y4l0JBgPg/MAAACLdQCLTgSFyQ+EpwAAAItdbItFOItVdAHDAdM7TCQYiVwkFInLdgSLXCQYMcCF23Q5i1YcKdmJTgSLQhiD+AEPhJUAAACD+AJ0c4sWiVwkCItMJBSJVCQEiQwk6FOKAAABHonYi1V0AV4IjTQQg/4CiXV0diGLRWyLVTiLTVgPtjQQiXVI0+YPtkwQAYtFVDHOIcaJdUiLXXSB+wUBAACJ2ncS" & _
+    "i00Ai3EEhfZ0CItFLOku////g8QcW15fXcOJXCQIixaJVCQEi04wiQwk6KG0//+JRjDpcP///4lcJAiLFolUJASLTjCJDCToNJD//+vhifaLTTiJfCQIjRwPiQwkiVwkBOiqiQAAKX1wi01Mi1VEKX1sKX1cjQRKkI20JgAAAACD6AIx2w+3EDn6cgSJ0yn7ZokYSXXqi3VAifmNBH6J9oPoAjHbD7cQOfpyBInTKftmiRhJdeoBfCQY6Z7+//+QVVdWU4PsHItEJDDHRCQQAAAAAItMJDSLWDiLUGyLqJAAAACLeHyJXCQYi3B4i0QkMIlsJBSLXCQYi2gsAdONhfr+//85wnYNidAp6AUGAQAAiUQkEItEJDCLaECLRCQwiWwkDItoNItEJBiJbCQIjawCAgEAAIlsJAQPtkQe/4hEJAOLRCQwD7YUHjuwjAAAAIhUJAJyA8HvAotUJDCLanQ5bCQUdgmJbCQUkI10JgAPtkQkAotUJBgByjgEFnQn" & _
+    "i0QkCItUJAwhyA+3DEI7TCQQdgNPddk57onwdgKJ6IPEHFteX13DD7ZEJAM4RBb/dc4PtgM4AnXHD7ZDAUI4AnW+g8MCQkJDD7YCOAN1RUJDD7YCOAN1PEJDD7YCOAN1M0JDD7YCOAN1KkJDD7YCOAN1IUJDD7YCOAN1GEJDD7YCOAN1D0JDD7YCOAN1BjtcJARysotEJAS6AgEAACnYi1wkBCnCgesCAQAAOfIPjk3///87VCQUi3QkMIlOcInWD41R////D7ZEGv+IRCQDD7YUGohUJALpJP///5CQkJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAQAAAAEAAAACAAAAAgAAAAIAAAACAAAAAwAAAAMAAAADAAAAAwAAAAQAAAAEAAAABAAAAAQAAAAFAAAABQAAAAUAAAAFAAAAAAAAAI22AAAAAI2/AAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAIAAAACAAAA"
+Private Const STR_ZLIB_9 As String = _
+    "AwAAAAMAAAAEAAAABAAAAAUAAAAFAAAABgAAAAYAAAAHAAAABwAAAAgAAAAIAAAACQAAAAkAAAAKAAAACgAAAAsAAAALAAAADAAAAAwAAAANAAAADQAAAJCNtCYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAADAAAABwAAABAREgAIBwkGCgULBAwDDQIOAQ+QDAAIAIwACABMAAgAzAAIACwACACsAAgAbAAIAOwACAAcAAgAnAAIAFwACADcAAgAPAAIALwACAB8AAgA/AAIAAIACACCAAgAQgAIAMIACAAiAAgAogAIAGIACADiAAgAEgAIAJIACABSAAgA0gAIADIACACyAAgAcgAIAPIACAAKAAgAigAIAEoACADKAAgAKgAIAKoACABqAAgA6gAIABoACACaAAgAWgAIANoACAA6AAgAugAIAHoACAD6AAgA" & _
+    "BgAIAIYACABGAAgAxgAIACYACACmAAgAZgAIAOYACAAWAAgAlgAIAFYACADWAAgANgAIALYACAB2AAgA9gAIAA4ACACOAAgATgAIAM4ACAAuAAgArgAIAG4ACADuAAgAHgAIAJ4ACABeAAgA3gAIAD4ACAC+AAgAfgAIAP4ACAABAAgAgQAIAEEACADBAAgAIQAIAKEACABhAAgA4QAIABEACACRAAgAUQAIANEACAAxAAgAsQAIAHEACADxAAgACQAIAIkACABJAAgAyQAIACkACACpAAgAaQAIAOkACAAZAAgAmQAIAFkACADZAAgAOQAIALkACAB5AAgA+QAIAAUACACFAAgARQAIAMUACAAlAAgApQAIAGUACADlAAgAFQAIAJUACABVAAgA1QAIADUACAC1AAgAdQAIAPUACAANAAgAjQAIAE0ACADNAAgALQAIAK0ACABtAAgA7QAIAB0ACACdAAgAXQAIAN0ACAA9AAgAvQAIAH0ACAD9AAgA" & _
+    "EwAJABMBCQCTAAkAkwEJAFMACQBTAQkA0wAJANMBCQAzAAkAMwEJALMACQCzAQkAcwAJAHMBCQDzAAkA8wEJAAsACQALAQkAiwAJAIsBCQBLAAkASwEJAMsACQDLAQkAKwAJACsBCQCrAAkAqwEJAGsACQBrAQkA6wAJAOsBCQAbAAkAGwEJAJsACQCbAQkAWwAJAFsBCQDbAAkA2wEJADsACQA7AQkAuwAJALsBCQB7AAkAewEJAPsACQD7AQkABwAJAAcBCQCHAAkAhwEJAEcACQBHAQkAxwAJAMcBCQAnAAkAJwEJAKcACQCnAQkAZwAJAGcBCQDnAAkA5wEJABcACQAXAQkAlwAJAJcBCQBXAAkAVwEJANcACQDXAQkANwAJADcBCQC3AAkAtwEJAHcACQB3AQkA9wAJAPcBCQAPAAkADwEJAI8ACQCPAQkATwAJAE8BCQDPAAkAzwEJAC8ACQAvAQkArwAJAK8BCQBvAAkAbwEJAO8ACQDvAQkA" & _
+    "HwAJAB8BCQCfAAkAnwEJAF8ACQBfAQkA3wAJAN8BCQA/AAkAPwEJAL8ACQC/AQkAfwAJAH8BCQD/AAkA/wEJAAAABwBAAAcAIAAHAGAABwAQAAcAUAAHADAABwBwAAcACAAHAEgABwAoAAcAaAAHABgABwBYAAcAOAAHAHgABwAEAAcARAAHACQABwBkAAcAFAAHAFQABwA0AAcAdAAHAAMACACDAAgAQwAIAMMACAAjAAgAowAIAGMACADjAAgAAAAFABAABQAIAAUAGAAFAAQABQAUAAUADAAFABwABQACAAUAEgAFAAoABQAaAAUABgAFABYABQAOAAUAHgAFAAEABQARAAUACQAFABkABQAFAAUAFQAFAA0ABQAdAAUAAwAFABMABQALAAUAGwAFAAcABQAXAAUAkI20JgAAAAAAAQIDBAQFBQYGBgYHBwcHCAgICAgICAgJCQkJCQkJCQoKCgoKCgoKCgoKCgoKCgoLCwsLCwsLCwsLCwsLCwsL" & _
+    "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PAAAQERISExMUFBQUFRUVFRYWFhYWFhYWFxcXFxcXFxcYGBgYGBgYGBgYGBgYGBgYGRkZGRkZGRkZGRkZGRkZGRoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxscHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc" & _
+    "HR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQABAgMEBQYHCAgJCQoKCwsMDAwMDQ0NDQ4ODg4PDw8PEBAQEBAQEBARERERERERERISEhISEhISExMTExMTExMUFBQUFBQUFBQUFBQUFBQUFRUVFRUVFRUVFRUVFRUVFRYWFhYWFhYWFhYWFhYWFhYXFxcXFxcXFxcXFxcXFxcXGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxwAAAAAAQAAAAIAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAKAAAADAAAAA4AAAAQAAAAFAAAABgAAAAcAAAA" & _
+    "IAAAACgAAAAwAAAAOAAAAEAAAABQAAAAYAAAAHAAAACAAAAAoAAAAMAAAADgAAAAAAAAAI22AAAAAI2/AAAAAAAAAAABAAAAAgAAAAMAAAAEAAAABgAAAAgAAAAMAAAAEAAAABgAAAAgAAAAMAAAAEAAAABgAAAAgAAAAMAAAAAAAQAAgAEAAAACAAAAAwAAAAQAAAAGAAAACAAAAAwAAAAQAAAAGAAAACAAAAAwAAAAQAAAAGAAAJCNtCYAAAAAg+wQiRwki1wkFIl0JASLdCQgiXwkCIt8JByJbCQMi4u8FgAAi2wkGIP5DQ+OjwAAAInwi1MU0+APt4u4FgAACciLSwhmiYO4FgAAD7aDuBYAAIgECotLFItTCA+2g7kWAABBiUsUiAQRi4O8FgAAuRAAAAD/QxQPt9YpwdP6g+gNZomTuBYAAImDvBYAAIt0JASJfCQci3wkCIlsJBiLbCQMiVwkFIscJMdEJCABAAAAg8QQ6XcMAACNtCYAAAAA" & _
+    "D7eTuBYAANPmjUEDCdZmibO4FgAA67GJ9o28JwAAAABVV1ZTg+wMi3QkIIuOvBYAAIP5DQ+OWQIAAA+3hrgWAAC/AgAAAIn90+WLXggJxWaJrrgWAACLbhQPto64FgAAiEwdAIteFItOCA+2lrkWAABDiV4UiBQLi4a8FgAAuRAAAAD/RhQpwdP/Zom+uBYAAIPoDQ+3PcKIuGG9EAAAAInqiYa8FgAAi468FgAAKfo50Q+OugEAAA+3HcCIuGGLVhSJ2NPgD7eOuBYAAAnIi04IZomGuBYAAA+2hrgWAACIBAqLThSLVggPtoa5FgAAQYlOFIgEEYuWvBYAAInp/0YUKdGNRBfw0/tmiZ64FgAAiYa8FgAAiTQk6GEKAACLvrQWAACLjrwWAAApz4PHC4P/CA+P6QAAAIP5DQ+OEQEAAA+3hrgWAAC9AgAAAInv0+eLXggJx2aJvrgWAACLfhQPto64FgAAiAwfi14Ui04ID7aWuRYAAEOJXhSIFAuL" & _
+    "hrwWAAC5EAAAAP9GFCnB0/1mia64FgAAg+gND7c9woi4Yb0QAAAAieqJhrwWAACLjrwWAAAp+jnRfnoPtx3AiLhhi1YUidjT4A+3jrgWAAAJyItOCGaJhrgWAAAPtoa4FgAAiAQKi04Ui1YID7aGuRYAAEGJThSIBBGLlrwWAACJ6f9GFCnRjUQX8NP7ZomeuBYAAImGvBYAAIk0JOheCQAAvwcAAACJvrQWAACDxAxbXl9dww+3LcCIuGEPt4a4FgAA0+UJxWaJrrgWAACNBA/rwQ+3nrgWAAC9AgAAANPljUEDCd1mia64FgAA6Sn///8Pty3AiLhhD7eGuBYAANPlCcVmia64FgAAjQQP6X7+//8Pt564FgAAvwIAAADT541BAwnfZom+uBYAAOni/f//jbQmAAAAAI28JwAAAABVV1ZTg+wci3QkMMdEJBgAAAAAi2wkNItcJDiLloQAAACLfCQ8hdIPjhwDAACF23QMixaDeiwCD4T/AgAAiTQk" & _
+    "jY4YCwAAiUwkBOjRCwAAiTQkjZYkCwAAiVQkBOi/CwAAi44cCwAAjZaUAAAAiVQkBIk0JIlMJAjoIxEAAIuOKAsAAI2WiAkAAIlUJASJNCSJTCQI6AcRAACJNCSNjjALAACJTCQE6HULAAC5EgAAAA+2kayEuGFmg7yWfgoAAAB1BkmD+QJ/6IlMJBiLhqgWAACNFEmLjqwWAAABwo1CEYmGqBYAAIPBCoPCG8HqA8HpAznRdwKJyo1DBDnQD4e3AAAAhe0PhK8AAACJfCQMiVwkCIlsJASJNCToYfv//zHA6w2QkJCQkJCQkJCQkJCQMclmiYyGlAAAAEA9HQEAAH7uMcCNtgAAAACNvwAAAAAx7WaJrIaICQAAQIP4HX7wMcAx22aJnIZ8CgAAQIP4En7wMdsxyTHSiZ6sFgAAMcC9AQAAAGaJrpQEAACF/4mOqBYAAImWsBYAAImGoBYAAHUIg8QcW15fXcOJdCQwg8QcW15fXemGBwAAg76IAAAA"
+Private Const STR_ZLIB_10 As String = _
+    "BA+E2QAAADnRD4TRAAAAi468FgAAg/kND46oAAAAD7eGuBYAAI1vBInr0+OLVggJw2aJnrgWAACLXhQPto64FgAAiAwTi14Ui04ID7aWuRYAAEOJXhSIFAuLhrwWAAC5EAAAAP9GFA+31SnB0/qD6A1miZa4FgAAiYa8FgAAi1QkGEKJVCQMi54oCwAAQ4lcJAiLrhwLAACJNCRFiWwkBOhrEAAAjY6ICQAAjZaUAAAAiUwkCIlUJASJNCTo3wAAAOmZ/v//D7eeuBYAAI1vBNPljUEDCd1mia64FgAA65iLjrwWAACD+Q1+dw+3hrgWAACNXwKJ3dPli1YICcVmia64FgAAi24UD7aOuBYAAIhMFQCLbhSLTggPtpa5FgAARYluFIhUDQCLhrwWAAC5EAAAAP9GFA+36ynB0/2D6A1mia64FgAAiYa8FgAAx0QkCECJuGHHRCQEwIS4YelX////D7euuBYAAI1fAtPjjUEDCetmiZ64FgAA68uJNCTo" & _
+    "7AQAAOn0/P//jUsF6aX9///rDZCQkJCQkJCQkJCQkJBVV1ZTg+wMi3QkIMdEJAQAAAAAi56gFgAAhdsPhNAAAADrDZCQkJCQkJCQkJCQkJCLTCQEi66kFgAAi5aYFgAAD7d8TQCJfCQIi0QkCA+2LBFBhcCJTCQED4WCAQAAi0wkJLoQAAAAD7d8qQKLjrwWAAAp+jnRD442AQAAi0QkJItWCA+3HKgPt4a4FgAAid3T5QnFZomuuBYAAItuFA+2jrgWAACITBUAi24Ui04ID7aWuRYAAEWJbhSIVA0Ai668FgAAuRAAAAD/RhQp6Y1EL/DT+2aJnrgWAACJhrwWAACLnqAWAAA5XCQED4I/////i0wkJL0QAAAAiesPt7kCBAAAi468FgAAKfs52Q+OfQAAAItEJCSLVhQPt5gABAAAidjT4A+3jrgWAAAJyItOCGaJhrgWAAAPtoa4FgAAiAQKi04Ui1YID7aGuRYAAEGJThSIBBGLlrwWAACJ6f9G" & _
+    "FCnRjUQX8NP7ZomeuBYAAImGvBYAAItMJCQPt7kCBAAAib60FgAAg8QMW15fXcOQD7eeuBYAAItEJCQPt6gABAAAjQQP0+UJ3WaJrrgWAADrvotUJCQPtwSqjRQPD7euuBYAAImWvBYAANPgCehmiYa4FgAA6Q3///+NtgAAAAAPtr3Ai7hhi1wkJA+3lLsGBAAAuxAAAACJFCSLDCQpy4uOvBYAADnZD46SAgAAi0QkJItWFA+3nLgEBAAAidjT4A+3jrgWAAAJyItOCGaJhrgWAAAPtoa4FgAAiAQKi04Ui1YID7aGuRYAAEGJThSIBBGLhrwWAAC5EAAAAP9GFCnB0/tmiZ64FgAAiwwkjUQB8ImGvBYAAIscvWCDuGGF23R7iwy9wIy4Yb8QAAAAifopzSnai468FgAAOdEPjuABAACJ6ItWFNPgD7eOuBYAAAnIi04IZomGuBYAAA+2hrgWAACIBAqLThSLVggPtoa5FgAAQYlOFIgEEQ+3xYn5" & _
+    "/0YUi668FgAAKenT+GaJhrgWAACNRCvwiYa8FgAA/0wkCIF8JAj/AAAAD4dgAQAAi1wkCA+2u8CJuGGLVCQouxAAAACLjrwWAAAPt2y6AinrOdkPjg4BAAAPtxy6i1YUidjT4A+3jrgWAAAJyItOCGaJhrgWAAAPtoa4FgAAiAQKi04Ui1YID7aGuRYAAEGJThSIBBGLlrwWAAC5EAAAAP9GFCnRjUQV8NP7ZomeuBYAAImGvBYAAIscveCDuGGF2w+EOv3//4sUvUCNuGG/EAAAAIuOvBYAAClUJAiJ/SndOel+YA+3hrgWAACLbCQIi1YI0+UJxWaJrrgWAACLbhQPto64FgAAiEwVAItuFItOCA+2lrkWAABFiW4UiFQNAIuuvBYAAIn5D7dEJAj/RhQp6dP4ZomGuBYAAI1EK/Dptvz//9NkJAiNBAsPt5a4FgAACVQkCIt8JAhmib64FgAA6ZT8//+LRCQoD7ccuA+3hrgWAADT4wnDZomeuBYA" & _
+    "AI1EDQDpKP///422AAAAAItUJAjB6gcPtrrAirhh6Zj+//8Pt764FgAA0+WNBAsJ/WaJrrgWAADpW/7//412AItEJCQPt5y4BAQAAA+3hrgWAADT4wnDZomeuBYAAIscJI0EC+mp/f//jbQmAAAAAItEJAQx0o12AI28JwAAAABmg7yQlAAAAAB1BkKD+gh+74P6CXQPg/ogiwgPlMIPttKJUSzDug4AAACNtgAAAABmg7yQlAAAAAB120KD+h9+7+vTjbYAAAAAjbwnAAAAAFOLTCQIMduLVCQMkI10JgCJyEqD4AEJw9HpAduF0n/w0euJ2FvDjXYAjbwnAAAAAFOLXCQIi4O8FgAAg/gQdDCD+Ad+KA+2g7gWAACLSwiLUxSIBAoPtou5FgAA/0MUg6u8FgAACGaJi7gWAABbw5APtoO4FgAAi1MUi0sIiAQKi0sUi1MID7aDuRYAAEGJSxSIBBEx0v9DFGaJk7gWAAAx0omTvBYAAOvDjbYAAAAA" & _
+    "U4tcJAiLg7wWAACD+Ah+QA+2g7gWAACLUxSLSwiIBAqLSxSLUwgPtoO5FgAAQYlLFIgEEf9DFDHSZomTuBYAADHSiZO8FgAAW8ONtgAAAACFwH7jD7aDuBYAAItLCItTFIgECuvOjXYAjbwnAAAAAFdWU4PsEIt0JCCLfCQki1wkKIk0JOh2////uggAAACJlrQWAACLVCQshdJ0QYtOFItGCIgcAYtOFA+2x4tWCEGJThSIBBGLThSI2ItWCPbQQYlOFIgEEYtOFInYi1YI99APtsRBiU4UiAQR/0YUS4P7/3QijbYAAAAAjb8AAAAAD7YHS4tWFItOCEeIBAr/RhSD+/916oPEEFteX8ONdgCLVCQEMcCNipQAAACJihgLAAC5ABC5YYmKIAsAAI2KiAkAAImKJAsAALkUELlhiYosCwAAjYp8CgAAiYowCwAAuSgQuWGJijgLAAAxyWaJirgWAAAxyYmKvBYAALkIAAAAiYq0FgAAifaNvCcAAAAA" & _
+    "MclmiYyClAAAAEA9HQEAAH7uMcCNtgAAAACNvwAAAAAxyWaJjIKICQAAQIP4HX7wMcAxyWaJjIJ8CgAAQIP4En7wuQEAAAAxwGaJipQEAAAxyYmKrBYAADHJiYqoFgAAMcmJirAWAACJgqAWAADDkIPsDItMJBSJHCSLXCQQiXQkBIt0JBiJfCQIi4OgFgAAi7ukFgAAifJmiQxHi7uYFgAAiBQ4/4OgFgAAhcl1Mw+3lLOUAAAAQmaJlLOUAAAAi7OcFgAAi3wkCE45s6AWAACLdCQED5TDD7bDixwkg8QMww+2vsCLuGFJ/4OwFgAAD7e0u5gEAABGgfn/AAAAZom0u5gEAAB3Rw+2gcCJuGGB+f8AAACNFIWACQAAdyEPtoHAibhhjTyFgAkAAA+3TDsIQWaJTBMI64aNtgAAAADB6QcPtoHAirhh69qNdCYAicrB6gcPtoLAirhh67KJ9lVXVlOD7Hwx28dEJEgAAAAAi5QklAAAAIu0JJAAAADH" & _
+    "RCRE/////4tqCIs6i1UMiZ5QFAAAi00AvT0CAAA5VCRIiVQkTImuVBQAAH1TjXYAi1wkSGaDPJ8AD4QOBQAAi5ZQFAAAMcCLXCRIQolcJESJllAUAACJnJZcCwAAiIQzWBQAAP9EJEiLXCRMOVwkSHy+jbQmAAAAAI28JwAAAACLhlAUAACD+AGJRCQcf1GNUAExwIN8JEQBiZZQFAAAfjWJRCRAiYSWXAsAAGbHBIcBAItUJEAxwP+OqBYAAIXJiIQyWBQAAHS3D7dskQIprqwWAADrqv9EJESLRCRE68GLRCREi6wklAAAAIlFBIueUBQAAInZiVwkHMHpHwHZiVwkPNH5hcmJTCRID462AAAA6w2QkJCQkJCQkJCQkJCQi2wkSInpi5SuXAsAAAHJO0wkPIlUJDh/c420JgAAAAA7TCQ8D433AwAAi5SOYAsAAIucjlwLAACJVCQ0D7cUlw+3BJ9mOcIPgtMDAABmOcIPhKgDAACNdgCNvCcAAAAA" & _
+    "i0QkOA+3FIcPtwSfZjnCchtmOcIPhGYDAACJnK5cCwAAic2NDAk7TCQ8fpT/TCRIi1wkOItMJEiJnK5cCwAAhckPj1n///+LbCRMiWwkQJDHRCQsAQAAAItMJBy7AgAAAIuWYAsAAIuEjlwLAACJVCRIiUQkMImGYAsAAItEJBxIiYZQFAAAOcN/dolEJByQO1wkHA+N1wIAAIusnmALAACLjJ5cCwAAD7cUrw+3BI9mOcIPgrcCAABmOcIPhIwCAACNtCYAAAAAjbwnAAAAAA+3BI+LbCQwD7cUr2Y5wnIgZjnCD4RGAgAAi1QkLIlcJCwB2ztcJByJjJZcCwAAfo+LXCQwi0wkLIuWVBQAAItsJEiJnI5cCwAAi45gCwAAiayWWAsAAIPqAomWVBQAAImMllwLAAAPtxyvi2wkQA+3BI8Bw2aJHK+LXCRID7aEMVgUAAAPtpQzWBQAADjCcgKI0ItcJED+wIiEM1gUAABmiVyPAotEJEC7AgAAAItM" & _
+    "JEhmiUSPAotUJEDHRCQkAQAAAInVRYlsJECLrlAUAACJVCQoiZZgCwAAOeuJbCQcf32NtCYAAAAAjbwnAAAAADnrD41ZAQAAi4SeYAsAAIuMnlwLAACJRCQgD7cUhw+3BI9mOcIPgjUBAABmOcIPhBEBAACNtgAAAACNvwAAAACLRCQoD7cUhw+3BI9mOcJyHmY5wg+EzQAAAItUJCSJXCQkAds564mMllwLAAB+kYtcJChNi0wkJImcjlwLAAAPjwv+//+LjlQUAACNnjwLAACLlmALAACLrCSUAAAASYmUjlwLAACJjlQUAACJbCQEiTQk6GgFAAAxyboBAAAAkA+3bFP+jXQNAAH2Zol0VFAPt85Cg/oPfucx2ztcJER/H+sNkJCQkJCQkJCQkJCQkA+3TJ8Chcl1D0M7XCREfvCDxHxbXl9dw4lMJAQPt3RMUI1GAWaJRExQiTQk6O/3//9miQSf69IPtoQxWBQAAItUJCg4hDJYFAAAD4ca////"
+Private Const STR_ZLIB_11 As String = _
+    "6Sr///8PtoQxWBQAAItUJCA4hDJYFAAAD4fi/v//ifZDi4yeXAsAAOnT/v//jXYAD7aEMVgUAACLbCQwOIQ1WBQAAA+Hof3//+mz/f//D7aUMVgUAAA4lDVYFAAAD4dt/f//jbYAAAAAjbwnAAAAAEOLjJ5cCwAA6VP9//+NdgAPtoQzWBQAAItUJDg4hDJYFAAAD4eB/P//6Y78//8PtoQzWBQAAItUJDQ4hDJYFAAAD4dJ/P//ifaNvCcAAAAAQYucjlwLAADpM/z//4tsJEhmx0SvAgAA6Qf7//+NdgBVMclXvwcAAABWU4PsCItUJCDHRCQE/////4tsJBwPt1oCxwQkBAAAAIXbdQzHBCQDAAAAv4oAAACLRCQkMfaLVCQgOcZmx0SCBv//f1mJ9otEJCBBido5+Q+3XLAGfQQ52nQ8OwwkfWeLvJV8CgAAAc9mibyVfAoAAIlUJAQxyb+KAAAAhdt0NznadCPHBCQEAAAAvwcAAACNtCYAAAAA" & _
+    "Rjt0JCR+qYPECFteX13DkL8GAAAAjXQmAI28JwAAAADHBCQDAAAA69eNtCYAAAAAhdJ0LDtUJAR0EIuMlXwKAABBZomMlXwKAACLvbwKAABHZom9vAoAAOuAjbYAAAAAg/kKfxOLjcAKAABBZomNwAoAAOli////i73ECgAAR2aJvcQKAADpT////5CNdCYAVVdWU4PsHIt0JDCLRCQ0i3wkOIuOvBYAAIlEJBiLbCQ8g/kLD456AgAAicOLVhSB6wEBAACJ2NPgD7eOuBYAAAnIi04IZomGuBYAAA+2hrgWAACIBAqLThSLVggPtoa5FgAAQYlOFIgEEYuGvBYAALkQAAAA/0YUD7fTKcHT+oPoC2aJlrgWAACJhrwWAACLjrwWAACD+QsPjuUBAAAPt4a4FgAAT4n7iXwkFNPji34UCcNmiZ64FgAAi14ID7aOuBYAAIgMH4teFItOCA+2lrkWAABDiV4UiBQLi4a8FgAAuRAAAAAPt3wkFP9GFCnB" & _
+    "g+gL0/9mib64FgAAiYa8FgAAi468FgAAg/kMD45VAQAAD7eGuBYAAI19/In70+OLVggJw2aJnrgWAACLXhQPto64FgAAiAwTi14Ui04ID7aWuRYAAEOJXhSIFAuLhrwWAAC5EAAAAP9GFA+31ynB0/qD6AxmiZa4FgAAiYa8FgAAMf857w+NggAAAJCNdCYAi468FgAAg/kND46xAAAAD7aXrIS4YQ+3nJZ+CgAAi1YUidjT4A+3jrgWAAAJyItOCGaJhrgWAAAPtoa4FgAAiAQKi04Ui1YID7aGuRYAAEGJThSIBBGLhrwWAAC5EAAAAP9GFCnB0/tmiZ64FgAAg+gNiYa8FgAARznvfIOJNCSLXCQYjY6UAAAAiUwkBI2uiAkAAEuJXCQI6OICAACJbCQ0i3wkFIl0JDCJfCQ4g8QcW15fXenGAgAAjbYAAAAAD7aXrIS4YY1BAw+3nJZ+CgAAD7eWuBYAANPjCdNmiZ64FgAA64wPt564FgAAjX38" & _
+    "0+eNQQQJ32aJvrgWAADp6P7//0+NQQWJ+4l8JBTT4w+3vrgWAAAJ+2aJnrgWAADpWP7//w+3hrgWAACLXCQYgesBAQAA0+MJw41BBWaJnrgWAADpwf3//5CNtCYAAAAAVVdWU4PsIItcJDjHRCQEAAAAAItsJDSLM4tDBIl0JByLcwgx24lEJBiLVgiLPotOBIlUJAyLVhCJfCQUiUwkEIlUJAiNtgAAAACNvwAAAAAx0maJlF08CwAAQ4P7D37wi51UFAAAi0wkHIu8nVwLAABmx0S5AgAAi71UFAAAR4H/PAIAAA+P+gAAAJCNdCYAi0QkHIu0vVwLAAAPt1ywAg+3TJgCjVkBO1wkCH4I/0QkBItcJAiLVCQcZolcsgI7dCQYD473AAAAR4H/PAIAAH6+i3QkBIX2D4SnAAAAi0wkCI1R/410JgCNvCcAAAAAD7eEVTwLAACJ02aFwHUPkEsPt4RdPAsAAGaFwHTyD7eMXT4LAABIg2wkBAJmiYRd" & _
+    "PAsAAIPBAmaJjF0+CwAAi0wkCItcJAQPt7RNPAsAAE6F22aJtE08CwAAf6SFyYnLdDONtCYAAAAAjbwnAAAAAA+3tF08CwAAhfZ0Fo10JgBPi4y9XAsAADtMJBh+EoX2de5LdduDxCBbXl9dw412AItUJBwPt0SKAjnYdCCJ2inCidCLVCQcD7cUig+vwotUJBwBhagWAABmiVyKAk7rvg+3jF08CwAAQWaJjF08CwAAMck7dCQMfA+LTCQMifCLVCQQKciLDIKLRCQcD7cUsI0EGYtcJBQPr8IBhagWAACF2w+Ewf7//4tcJBQPt0SzAgHID6/QAZWsFgAA6aj+///rDZCQkJCQkJCQkJCQkJBVuf////8x7Ve4BAAAAFZTg+wki1wkPIt8JDgPt1MCiVQkGIt0JBi6BwAAAIX2dQq6igAAALgDAAAAx0QkIAAAAACLdCRAOXQkIA+P/QAAAItcJBhFi3QkPDnViVwkHItcJCAPt1yeBolcJBh9Cjlc" & _
+    "JBwPhMMAAAA5xQ+NFQEAALsQAAAAjXQmAI28JwAAAACLTCQcidoPt7SPfgoAAIuPvBYAACnyOdEPjsQAAACLRCQcD7eUh3wKAACJ0NPgD7ePuBYAAIlUJBSLVxQJyGaJh7gWAACLTwgPtoe4FgAAiAQKi08Ui1cID7aHuRYAAEGJTxSIBBGLh7wWAACJ2f9HFCnBjUQG8NN8JBSLTCQUZomPuBYAAImHvBYAAE0PhW3///+LVCQYMe2LTCQchdJ1JLqKAAAAuAMAAAD/RCQgi3QkQDl0JCAPjgP///+DxCRbXl9dw4tEJBg5RCQcdAy6BwAAALgEAAAA69C6BgAAAOvEi1QkHA+3hJd8CgAAD7eXuBYAANPgCdBmiYe4FgAAjQQO64GLXCQchdsPhAMCAAA5TCQcD4SNAAAAi1QkHL4QAAAAi4+8FgAAD7ecl34KAAAp3jnxiVwkEA+OqgEAAItUJBwPt7SXfAoAAItXFInw0+APt4+4FgAACciLTwhm" & _
+    "iYe4FgAAD7aHuBYAAIgECotPFItXCA+2h7kWAABBiU8UiAQRi5e8FgAAuRAAAAD/RxQp0Y1EE/DT/maJt7gWAACJh7wWAABND7ePvgoAALoQAAAAKcqJTCQMi4+8FgAAOdEPjv0AAAAPt7e8CgAAi1cID7eHuBYAAInz0+MJw2aJn7gWAACLXxQPto+4FgAAiAwTi18Ui08ID7aXuRYAAEOJXxSIFAuLn7wWAAC5EAAAAP9HFCnZ0/5mibe4FgAAi3QkDI1EHvCJh7wWAACLj7wWAACD+Q5+cg+3h7gWAACNXf2J3dPli3cICcVmia+4FgAAi28UD7aPuBYAAIhMNQCLdxQPt+sPtpe5FgAAi08IRol3FIgUDouHvBYAALkQAAAA/0cUKcHT/WaJr7gWAACD6A6NtgAAAACNvwAAAACJh7wWAADp6P3//w+3t7gWAACNXf3T441BAgnzZomfuBYAAOvbD7efvAoAAIt0JAwPt4e4FgAA0+MJw2aJn7gW" & _
+    "AACNBA7pPv///w+3h7gWAACLdCQcD7ect3wKAACLdCQQ0+MJw40EDmaJn7gWAADpjf7//4P9Cg+PKgEAAA+3j8IKAAC6EAAAACnKiUwkBIuPvBYAADnRD47lAAAAD7e3wAoAAItXCA+3h7gWAACJ89PjCcNmiZ+4FgAAi18UD7aPuBYAAIgME4tfFItPCA+2l7kWAABDiV8UiBQLi5+8FgAAuRAAAAD/RxQp2dP+Zom3uBYAAIt0JASNRB7wiYe8FgAAi4+8FgAAg/kNfmAPt4e4FgAAjV39id3T5Yt3CAnFZomvuBYAAItvFA+2j7gWAACITDUAi3cUD7frD7aXuRYAAItPCEaJdxSIFA6Lh7wWAAC5EAAAAP9HFCnB0/1mia+4FgAAg+gN6ZL+//8Pt7e4FgAAjV390+ONQQPpmP7//w+3n8AKAACLdCQED7eHuBYAANPjCcNmiZ+4FgAAjQQO6Vb///8Pt4/GCgAAuhAAAAApyokMJIuPvBYAADnR" & _
+    "D47kAAAAD7e3xAoAAItXCA+3h7gWAACJ89PjCcNmiZ+4FgAAi18UD7aPuBYAAIgME4tfFItPCA+2l7kWAABDiV8UiBQLi5+8FgAAuRAAAAD/RxQp2dP+Zom3uBYAAIs0JI1EHvCJh7wWAACLj7wWAACD+Ql+YA+3h7gWAACNXfWJ3dPli3cICcVmia+4FgAAi28UD7aPuBYAAIhMNQCLdxQPt+sPtpe5FgAAi08IRol3FIgUDouHvBYAALkQAAAA/0cUKcHT/WaJr7gWAACD6Anpav3//w+3t7gWAACNXfXT441BB+lw/f//D7efxAoAAIs0JA+3h7gWAADT4wnDZomfuBYAAI0EDulX////kJCQkJCQkJCQkJCQkJCQkJCQbmVlZCBkaWN0aW9uYXJ5AHN0cmVhbSBlbmQAAGZpbGUgZXJyb3IAc3RyZWFtIGVycm9yAGRhdGEgZXJyb3IAaW5zdWZmaWNpZW50IG1lbW9yeQBidWZmZXIgZXJyb3IA" & _
+    "aW5jb21wYXRpYmxlIHZlcnNpb24AjXQmAI28JwAAAAAgr7hhMK+4YTuvuGE8r7hhR6+4YVSvuGFfr7hhc6+4YYCvuGE7r7hhMS4yLjMAifa4yK+4YcONdgCNvCcAAAAAuJUAAADDjXYAjbwnAAAAAItEJAS5AgAAACnBiwSNoK+4YcONtgAAAACNvCcAAAAAi1QkDItEJAgPr9CJVCQE6YxaAACNtgAAAACNvwAAAACD7AyLVCQUiRQk6FFaAACDxAzDkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCLRCQEhcB0B4tQHIXSdQa4/v///8PHQhwAAAAAjYowBQAAx0AUAAAAAMdACAAAAADHQDABAAAAx0AYAAAAADHAxwIAAAAAx0IEAAAAAMdCDAAAAADHQhQAgAAAx0IgAAAAAMdCKAAAAADHQiwAAAAAx0IwAAAAAMdCOAAAAADHQjwAAAAAiUpsiUpQiUpMw5CD7AyLRCQQiRwki0wkFIl0"
+Private Const STR_ZLIB_12 As String = _
+    "JASLXCQYhcCJfCQIdCKLUByF0nQbg/kQfxaLcjyNPDGD/yB2H410JgCNvCcAAAAAuP7///+LHCSLdCQEi3wkCIPEDMOJejy4AQAAANPgSInxIcPT4zHAAVo469mNdCYAg+wci0QkKIlcJBSLVCQsiXQkGItcJCCFwIt0JCR0BYA4MXQRuPr///+LXCQUi3QkGIPEHMOD+jh16oXbuP7///905sdDGAAAAACLUyCF0nUTx0MgELC4YboQsLhhx0MoAAAAAItLJIXJdQfHQyQwsLhhx0QkCDAlAADHRCQEAQAAAItLKIkMJP/SicKF0rj8////dJSJUxyF9nhVifHB+QRBiUoIg/4vfwOD5g+NTviD+Qd3HolyJMdCNAAAAACLdCQYiVwkIItcJBSDxBzpLf7//4lUJASLUyiJFCT/UyTHQxwAAAAAuP7////pOP///8dCCAAAAAD33uuxjXQmAIPsHItUJCTHRCQEDwAAAItMJCiJVCQIi1QkIIlMJAyJ" & _
+    "FCTo2f7//4PEHMOQkJCQkJCQkJCQkJCQkJCQkJCQkJAQABEAEgAAAAgABwAJAAYACgAFAAsABAAMAAMADQACAA4AAQAPAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQYAcAAAAIUAAACBAAFAhzABIHHwAACHAAAAgwAAAJwAAQBwoAAAhgAAAIIAAACaAAAAgAAAAIgAAACEAAAAngABAHBgAACFgAAAgYAAAJkAATBzsAAAh4AAAIOAAACdAAEQcRAAAIaAAACCgAAAmwAAAICAAACIgAAAhIAAAJ8AAQBwQAAAhUAAAIFAAVCOMAEwcrAAAIdAAACDQAAAnIABEHDQAACGQAAAgkAAAJqAAACAQAAAiEAAAIRAAACegAEAcIAAAIXAAACBwAAAmYABQHUwAACHwAAAg8AAAJ2AASBxcAAAhsAAAILAAACbgAAAgMAAAIjAAACEwAAAn4ABAHAwAACFIAAAgSABUIowATByMAAAhyAAAIMgAACcQA" & _
+    "EQcLAAAIYgAACCIAAAmkAAAIAgAACIIAAAhCAAAJ5AAQBwcAAAhaAAAIGgAACZQAFAdDAAAIegAACDoAAAnUABIHEwAACGoAAAgqAAAJtAAACAoAAAiKAAAISgAACfQAEAcFAAAIVgAACBYAQAgAABMHMwAACHYAAAg2AAAJzAARBw8AAAhmAAAIJgAACawAAAgGAAAIhgAACEYAAAnsABAHCQAACF4AAAgeAAAJnAAUB2MAAAh+AAAIPgAACdwAEgcbAAAIbgAACC4AAAm8AAAIDgAACI4AAAhOAAAJ/ABgBwAAAAhRAAAIEQAVCIMAEgcfAAAIcQAACDEAAAnCABAHCgAACGEAAAghAAAJogAACAEAAAiBAAAIQQAACeIAEAcGAAAIWQAACBkAAAmSABMHOwAACHkAAAg5AAAJ0gARBxEAAAhpAAAIKQAACbIAAAgJAAAIiQAACEkAAAnyABAHBAAACFUAAAgVABAIAgETBysAAAh1AAAINQAACcoA" & _
+    "EQcNAAAIZQAACCUAAAmqAAAIBQAACIUAAAhFAAAJ6gAQBwgAAAhdAAAIHQAACZoAFAdTAAAIfQAACD0AAAnaABIHFwAACG0AAAgtAAAJugAACA0AAAiNAAAITQAACfoAEAcDAAAIUwAACBMAFQjDABMHIwAACHMAAAgzAAAJxgARBwsAAAhjAAAIIwAACaYAAAgDAAAIgwAACEMAAAnmABAHBwAACFsAAAgbAAAJlgAUB0MAAAh7AAAIOwAACdYAEgcTAAAIawAACCsAAAm2AAAICwAACIsAAAhLAAAJ9gAQBwUAAAhXAAAIFwBACAAAEwczAAAIdwAACDcAAAnOABEHDwAACGcAAAgnAAAJrgAACAcAAAiHAAAIRwAACe4AEAcJAAAIXwAACB8AAAmeABQHYwAACH8AAAg/AAAJ3gASBxsAAAhvAAAILwAACb4AAAgPAAAIjwAACE8AAAn+AGAHAAAACFAAAAgQABQIcwASBx8AAAhwAAAIMAAACcEA" & _
+    "EAcKAAAIYAAACCAAAAmhAAAIAAAACIAAAAhAAAAJ4QAQBwYAAAhYAAAIGAAACZEAEwc7AAAIeAAACDgAAAnRABEHEQAACGgAAAgoAAAJsQAACAgAAAiIAAAISAAACfEAEAcEAAAIVAAACBQAFQjjABMHKwAACHQAAAg0AAAJyQARBw0AAAhkAAAIJAAACakAAAgEAAAIhAAACEQAAAnpABAHCAAACFwAAAgcAAAJmQAUB1MAAAh8AAAIPAAACdkAEgcXAAAIbAAACCwAAAm5AAAIDAAACIwAAAhMAAAJ+QAQBwMAAAhSAAAIEgAVCKMAEwcjAAAIcgAACDIAAAnFABEHCwAACGIAAAgiAAAJpQAACAIAAAiCAAAIQgAACeUAEAcHAAAIWgAACBoAAAmVABQHQwAACHoAAAg6AAAJ1QASBxMAAAhqAAAIKgAACbUAAAgKAAAIigAACEoAAAn1ABAHBQAACFYAAAgWAEAIAAATBzMAAAh2AAAINgAACc0A" & _
+    "EQcPAAAIZgAACCYAAAmtAAAIBgAACIYAAAhGAAAJ7QAQBwkAAAheAAAIHgAACZ0AFAdjAAAIfgAACD4AAAndABIHGwAACG4AAAguAAAJvQAACA4AAAiOAAAITgAACf0AYAcAAAAIUQAACBEAFQiDABIHHwAACHEAAAgxAAAJwwAQBwoAAAhhAAAIIQAACaMAAAgBAAAIgQAACEEAAAnjABAHBgAACFkAAAgZAAAJkwATBzsAAAh5AAAIOQAACdMAEQcRAAAIaQAACCkAAAmzAAAICQAACIkAAAhJAAAJ8wAQBwQAAAhVAAAIFQAQCAIBEwcrAAAIdQAACDUAAAnLABEHDQAACGUAAAglAAAJqwAACAUAAAiFAAAIRQAACesAEAcIAAAIXQAACB0AAAmbABQHUwAACH0AAAg9AAAJ2wASBxcAAAhtAAAILQAACbsAAAgNAAAIjQAACE0AAAn7ABAHAwAACFMAAAgTABUIwwATByMAAAhzAAAIMwAACccA" & _
+    "EQcLAAAIYwAACCMAAAmnAAAIAwAACIMAAAhDAAAJ5wAQBwcAAAhbAAAIGwAACZcAFAdDAAAIewAACDsAAAnXABIHEwAACGsAAAgrAAAJtwAACAsAAAiLAAAISwAACfcAEAcFAAAIVwAACBcAQAgAABMHMwAACHcAAAg3AAAJzwARBw8AAAhnAAAIJwAACa8AAAgHAAAIhwAACEcAAAnvABAHCQAACF8AAAgfAAAJnwAUB2MAAAh/AAAIPwAACd8AEgcbAAAIbwAACC8AAAm/AAAIDwAACI8AAAhPAAAJ/wAQBQEAFwUBARMFEQAbBQEQEQUFABkFAQQVBUEAHQUBQBAFAwAYBQECFAUhABwFASASBQkAGgUBCBYFgQBABQAAEAUCABcFgQETBRkAGwUBGBEFBwAZBQEGFQVhAB0FAWAQBQQAGAUBAxQFMQAcBQEwEgUNABoFAQwWBcEAQAUAAGluY29ycmVjdCBoZWFkZXIgY2hlY2sAdW5rbm93biBj" & _
+    "b21wcmVzc2lvbiBtZXRob2QAaW52YWxpZCB3aW5kb3cgc2l6ZQB1bmtub3duIGhlYWRlciBmbGFncyBzZXQAaGVhZGVyIGNyYyBtaXNtYXRjaABpbnZhbGlkIGJsb2NrIHR5cGUAaW52YWxpZCBzdG9yZWQgYmxvY2sgbGVuZ3RocwCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkHRvbyBtYW55IGxlbmd0aCBvciBkaXN0YW5jZSBzeW1ib2xzAGludmFsaWQgY29kZSBsZW5ndGhzIHNldABpbnZhbGlkIGxpdGVyYWwvbGVuZ3RocyBzZXQAaW52YWxpZCBkaXN0YW5jZXMgc2V0AGludmFsaWQgbGl0ZXJhbC9sZW5ndGggY29kZQBpbnZhbGlkIGRpc3RhbmNlIGNvZGUAaW52YWxpZCBkaXN0YW5jZSB0b28gZmFyIGJhY2sAaW52YWxpZCBiaXQgbGVuZ3RoIHJlcGVhdABpbmNvcnJl" & _
+    "Y3QgZGF0YSBjaGVjawBpbmNvcnJlY3QgbGVuZ3RoIGNoZWNrAI10JgCNvCcAAAAAVVdWU4PsfIuEJJAAAACFwHQui4QkkAAAAItoHIXtdCCLUAyF0nQZiwiFyQ+FVhgAAItwBIX2iXQkKHQUjXQmALj+////g8R8W15fXcONdgCLRQCD+AsPhBoYAACJTCRwi3QkKIucJJAAAACJVCRsi004iXQkaIt7EMdEJFgAAAAAi3U8iUwkYIl8JGSJfCRcg/gdd6v/JIXMvbhhRL64YZvBuGE5wrhhk8K4YVDHuGFYx7hhYMe4YWjHuGFwx7hheMe4YffHuGEyyLhhQMi4YWDJuGHZybhhMsq4Yc3KuGHNy7hhn824YQLPuGFXz7hhetC4YfbQuGHQ07hh9NO4YZHVuGFZ1bhhmdW4YYLBuGFwvbhhi1UIhdKJ13URx0UADAAAALgMAAAA6WL///+D/g93K4tEJGiFwA+EwQEAAP9MJGiJ8YtEJHCDxggPthj/" & _
+    "RCRw0+MBXCRgg/4PdtWD5wJ0DoF8JGAfiwAAD4QbAQAAx0UQAAAAAItFIIXAdArHQDD/////i1UI9sIBdDwPtlwkYL+FEEIIi1QkYMHjCMHqCAHTidiJ2ffnKdHR6YlUJCSJRCQgi0QkJAHBwekEic/B5wUpzzn7dCeLnCSQAAAAx0MYYLu4YZCNtCYAAAAAx0UAGwAAALgbAAAA6Z/+//+LTCRgg+EPg/kIdBCLhCSQAAAAx0AYd7u4YevTwWwkYASD7gSLVCRgg+IPjXoIO30kdhCLvCSQAAAAx0cYkru4Yeusifm6AQAAANPiiVUUMdvHRCQIAAAAAMdEJAQAAAAAxwQkAAAAAOjyUf//90QkYAACAACJRRiLtCSQAAAAx0QkYAAAAAAPlMOJRjAx9o1EGwmJRQDpBP7//8dEJAgAAAAAjXwkdDH2x0QkBAAAAADHBCQAAAAA6PJ1//+JRRiLTCR0x0QkCAIAAACJfCQEgeEA////g8kfiUwkdMZE"
+Private Const STR_ZLIB_13 As String = _
+    "JHWLi1UYiRQk6MJ1//+JRRi4AQAAAMdEJGAAAAAAx0UAAQAAAOmW/f//jbYAAAAAi4QkkAAAAIt8JGSLXCRoi0wkbItUJHCJeBCLfCRgiVgEiXU8i3UoiUgMiRCF9ol9OHUag30AFw+HHwEAAIu0JJAAAACLRhA5RCRcdCmLXCRci4QkkAAAAIlcJASJBCTojBoAAIXAD4XfAAAAi7wkkAAAAItHEClEJFyLjCSQAAAAi1wkKIt1CIt5BCn7AVkIi3wkXAF5FAF9HIX2dDKF/3Qui1UQhdJ0eol8JAiLcQwp/ol0JASLTRiJDCTo33T//4lFGIuMJJAAAACJQTCJ9ot9BItFPIX/dAODwECDfQALdDuLrCSQAAAAhduJRSx1CItcJFyF23QTg7wklAAAAAR0CYtEJFjpOfz//4t0JFiF9nXvx0QkWPv////r5YPogOvAi0QkXIuUJJAAAACJRCQIi3oMKceJfCQEi3UYiTQk6ApQ///pdv///8dFABwA" & _
+    "AAC4/P///+np+///i5QkkAAAAItCEOkL////g/4PdyyLTCRohckPhIT+////TCRoifGLXCRwg8YID7Y7Q4lcJHDT5wF8JGCD/g921ItEJGA8CIlFEHQTi5QkkAAAAMdCGHe7uGHpJv3//4tNEIHhAOD//2aFyXQTi5wkkAAAAMdDGKa7uGHpBf3//4tVIIXSdAyLdCRgwe4Ig+YBiTL2RRECD4XtBAAAx0QkYAAAAAAx9sdFAAIAAACD/h93LItcJGiF2w+E5v3///9MJGiJ8Yt8JHCDxggPthdHiXwkcNPiAVQkYIP+H3bUi0UghcB0B4t0JGCJcAT2RRECD4U9BAAAx0QkYAAAAAAx9sdFAAMAAACD/g93NJCNtCYAAAAAi3wkaIX/D4SE/f///0wkaInxi1QkcIPGCA+2GkKJVCRw0+MBXCRgg/4PdtSLVSCF0nQSD7ZMJGCLdCRgwe4IiUoIiXIMi1UQ9sYCD4WRAwAAx0QkYAAAAAAx9sdFAAQA" & _
+    "AAD2xgQPhGADAACD/g93K4tMJGiFyQ+EFP3///9MJGiJ8YtcJHCDxggPtjv/RCRw0+cBfCRgg/4PdtWLRSCLXCRghcCJXUB0BolYFItVEPbGAg+F1gIAAMdEJGAAAAAAMfbHRQAFAAAA9sYEdHuLXUA7XCRoidh2BItcJGiF23Rdi00ghcl0PYt5EIX/iXwkVHQyi3kUi1EYidkpx40EOznQdgSJ0Sn5iUwkCItEJFQB+IkEJIt8JHCJfCQE6E5HAACLVRD2xgIPhUECAAApXCRoi0VAAVwkcCnYiUVAhcAPhUr8//+LVRDHRUAAAAAAx0UABgAAAPbGCA+E+AEAAItcJGiF2w+EJPz//zHbifaLTCRwi0UgD7Y8C0OFwHQgi1AchdJ0GYtNQDtIIHMRifiIBBH/RUCJ9o28JwAAAACF/3QGO1wkaHLG9kURAg+FhQEAAClcJGgBXCRwhf8Phcz7//+LVRDHRUAAAAAAx0UABwAAAPbGEA+ERAEAAItc" & _
+    "JGiF2w+Epvv//zHbjXQmAItUJHCLRSAPtjwTQ4XAdCCLUCSF0nQZi01AO0gocxGJ+IgEEf9FQIn2jbwnAAAAAIX/dAY7XCRocsb2RRECD4XPAAAAKVwkaAFcJHCF/w+FTPv//4tVEMdFAAgAAAD2xgJ0X4P+D3czkI20JgAAAACLfCRohf8PhCT7////TCRoifGLRCRwg8YID7YY/0QkcNPjAVwkYIP+D3bVD7dNGDlMJGB0E4uUJJAAAADHQhi/u7hh6cj5///HRCRgAAAAADH2i0UghcB0EMdAMAEAAADB+gmD4gGJUCzHRCQIAAAAAMdEJAQAAAAAxwQkAAAAAOhLcP//iUUYi5wkkAAAAIlDMMdFAAsAAAC4CwAAAOkd+P//iVwkCItEJHCJRCQEi00YiQwk6BZw//+JRRjpEv///4tFIIXAD4Qa////x0AkAAAAAOkO////iVwkCItEJHCJRCQEi1UYiRQk6OBv//+JRRjpXP7//4tFIIXAD4Rk" & _
+    "/v//x0AcAAAAAOlY/v//iVwkCItEJHCJRCQEi1UYiRQk6Kpv//+JRRjpoP3//w+2TCRgjVQkdMFsJGAIiVQkBMdEJAgCAAAAD7ZEJGCITCR0iEQkdYt1GIk0JOhwb///iUUYi1UQ6e38//+LRSCFwA+E7Pz//8dAEAAAAADp4Pz//w+2RCRgjVQkdMFsJGAIiVQkBMdEJAgCAAAAD7ZcJGCIRCR0iFwkdYt9GIk8JOgcb///iUUYi1UQ6TL8//8PtlwkYMFsJGAIx0QkCAQAAAAPtkwkYMFsJGAIiFwkdI1cJHQPtlQkYMFsJGAIiEwkdYlcJAQPtkQkYIhUJHaIRCR3i00YiQwk6MNu//+JRRjpbfv//w+2TCRgjVQkdMFsJGAIx0QkCAIAAACJVCQED7ZEJGCITCR0iEQkdYt9GIk8JOiJbv//iUUY6dn6//+Qi1UQ6ar7//+LVRDpCfz//4tVEOmP/P//i1UQ6QX9//+LVRDpdv3//4P+H3csi3wk" & _
+    "aIX/D4Sn+P///0wkaInxi1wkcIPGCA+2E0OJXCRw0+IBVCRgg/4fdtTHRQAKAAAAi1wkYItMJGCLfCRgwesIi7QkkAAAAMFkJGAYgeMA/wAAwekYgecA/wAAAdmLRCRgx0QkYAAAAADB5wgB+QHBiU0YiU4wMfaLVQyF0g+EIgEAAMdEJAgAAAAAx0QkBAAAAADHBCQAAAAA6GJJ//+JRRiLjCSQAAAAx0UACwAAAIlBMIO8JJQAAAAFD4Tw9///i30Ehf90HMdFABgAAACJ8bgYAAAAg+EHKc7TbCRg6V31//+D/gJ3NJCNtCYAAAAAi1wkaIXbD4S09////0wkaInxi3wkcIPGCA+2F0eJfCRw0+IBVCRgg/4CdtSLTCRgTtFsJGCD4QGLRCRgiU0Eg+ADg/gBdEiD+AFyOoP4AnQsg/gDdBDBbCRgAoPuAotFAOnq9P//x0UAGwAAAIuEJJAAAADHQBjTu7hh69nHRQAPAAAA69DHRQANAAAA68fH" & _
+    "RUzgsrhhx0VUCQAAAMdFUOC6uGHHRVgFAAAAx0UAEgAAAOuii4QkkAAAAItcJGSLTCRsi3wkcItUJGiJWBCLXCRgiVAEiUgMiTi4AgAAAIldOIl1POkb9P//jbYAAAAAifGD4QcpztNsJGCD/h93LItcJGiF2w+EtPb///9MJGiJ8YtUJHCDxggPtjpCiVQkcNPnAXwkYIP+H3bUD7dUJGCLTCRgwekQgfH//wAAOcp0E4uEJJAAAADHQBjmu7hh6Uv1//+JVUAx9sdEJGAAAAAAx0UADgAAAItdQIXbD4Su+///O1wkaHYEi1wkaDtcJGR2BItcJGSF2w+EMPb//4lcJAiLfCRwi1QkbIl8JAQB34kUJOj2QAAAKVwkaClcJGQBXCRsKV1AiXwkcOmc/v//g/4NdyyLfCRohf8PhO31////TCRoifGLXCRwg8YID7YTQ4lcJHDT4gFUJGCD/g121It8JGCD7g7BbCRgBYPnH4tUJGDBbCRgBYHHAQEA" & _
+    "AIl9YIPiH4tcJGDBbCRgBI1KAYPjD4lNZIPDBIH/HgEAAIldXHcFg/kedhOLjCSQAAAAx0EYILy4YelR9P//x0VoAAAAAMdFABAAAACLRWiLXVyJRCQsOdhzXoP+Ancsi3wkaIX/D4RE9f///0wkaInxi3wkcIPGCA+2F0eJfCRw0+IBVCRgg/4CdtSLfWiD7gOLVCRgwWwkYAONRwGD4gcPt4w/oLK4YTnYiUVoZolUTXBypolEJCyLVCQsg/oSdxwPt5wSoLK4YY1CAYP4EonCZsdEXXAAAHbniUVox0VUBwAAAI29MAUAAI1VVIl9bI1NbI2d8AIAAIl9TI19cIlcJBSJVCQQiUwkDMdEJAgTAAAAiXwkBMcEJAAAAADonCwAAIlEJFiFwHQTi4QkkAAAAMdAGES8uGHpUfP//8dFaAAAAADHRQARAAAAi01gi11ki0VoiUwkPInPAd+JXCQ4OfiJRCQsD4PpAAAAi01UugEAAACLRUzT4kqJRCQ0" & _
+    "iVQkUI22AAAAAI2/AAAAAItcJFCLTCRgi3wkNCHZixyPD7bPD7b5Ofd2KItUJGiF0g+E+fP///9MJGiJ8YtEJHCDxggPtjj/RCRw0+cBfCRg672J2MHoEGaD+A8Ph7IFAAAPttcPtso5znM1jXQmAIt8JGiF/w+EtPP///9MJGiJ8YtUJHCDxggPtjpCiVQkcA+219PnAXwkYA+2yjnOcs8Pts+LRCQswesQ02wkYA+2ySnOZolcRXCJw0OJXWiJXCQsi3wkPItEJDgBxzl8JCwPgjn///+LRQCD+BsPhN3w///HRVQJAAAAjb0wBQAAjV1UiX1sjVVwiX1Mjb3wAgAAiVwkEI1dbIl8JBSJXCQMi01giVQkBMcEJAEAAACJTCQI6BgrAACJRCRYhcB0E4uEJJAAAADHQBhdvLhh6c3x///HRVgGAAAAi1VsiVVQiXwkFI19WIl8JBCJXCQMi11kiVwkCItNYMcEJAIAAACNVE1wiVQkBOjDKgAAiUQk" & _
+    "WIXAdBOLhCSQAAAAx0AYeby4Yel48f//x0UAEgAAAIN8JGgFdg6BfCRkAQEAAA+H1wMAAItNVLsBAAAAi31M0+ONU/+JfCQ0kI20JgAAAACLTCRgi3wkNCHRixyPD7bHD7bIOfF2KYtcJGiF2w+EPfL///9MJGiJ8Yt8JHCDxggPth9HiXwkcNPjAVwkYOvAhNsPhJIAAAD2w/APhYkAAACJ34n5wesQiVwkTA+20YlUJEiJ+rgBAAAAD7beD7bLi1wkSAHZ0+CLXCRMi0wkYEghyA+2ztPoi0wkNAHYixyBD7bGD7bID7bXD7bSAdE58XYpi0QkaIXAD4Sx8f///0wkaInxi1QkcIPGCA+2GkKJVCRw0+MBXCRg65eJ+g+2zg+2+dNsJGAp/g+2zw+2+Sn+02wkYInZwekQiU1AhNt1EcdFABcAAAC4FwAAAOnt7v//D7bDqCAPhbT2//+oQHQTi4QkkAAAAMdAGI+8uGHpG/D//8dFABMAAACD4A+J"
+Private Const STR_ZLIB_14 As String = _
+    "RUiLXUiF23RHOd5zKot8JGiF/w+EF/H///9MJGiJ8YtEJHCDxggPthD/RCRw0+IBVCRgOd5y1ojZi0QkYL8BAAAA02wkYCne0+dPIccBfUDHRQAUAAAAi01YuwEAAACLVVDT44lUJDCNU/+QjXQmAIt8JGCLTCQwIdeLHLkPtscPtsg58XYoi1wkaIXbD4Sd8P///0wkaInxi0QkcIPGCA+2OP9EJHDT5wF8JGDrwfbD8A+FiQAAAInfifnB6xCJXCRED7bRiVQkQIn6uAEAAAAPtt4PtsuLXCRAAdnT4ItcJESLTCRgSCHID7bO0+iLTCQwAdiLHIEPtsYPtsgPttcPttIB0TnxdimLVCRohdIPhBrw////TCRoifGLVCRwg8YID7YaQolUJHDT4wFcJGDrl4n6D7bOD7b502wkYCn+D7bPD7bD02wkYA+2ySnOqEB0E4uEJJAAAADHQBirvLhh6anu///HRQAVAAAAwesQg+APiV1EiUVIi11Ihdt0" & _
+    "RznecyqLfCRohf8PhJ/v////TCRoifGLRCRwg8YID7YQ/0QkcNPiAVQkYDnectaI2YtEJGC6AQAAANNsJGAp3tPiSiHCAVVEi1wkXIt9LItMJGQB+ynLOV1EdhOLlCSQAAAAx0IYwby4Yekh7v//x0UAFgAAAItcJGSF2w+ELu///4tcJFyLTCRki0VEKcs52HZrKdiJw4tFMDnDicJ2BYtVKCnDi300KdqLRUAB+jnDdgKJwztcJGR2BItcJGQpXCRkKdiJRUCQjbQmAAAAAA+2AkKLTCRsiAFBS4lMJGx17otVQIXSD4Vh9///x0UAEgAAALgSAAAA6ULs//+LVCRsi11AKcKJ2Ouqi5wkkAAAAItEJGyLVCRki3wkaItMJHCJQwyLRCRgiVMQi1QkXIl7BIu8JJAAAACJC4lFOIl1PIlUJASJPCTooiwAAIucJJAAAACLtCSQAAAAi5QkkAAAAItLDItGEIucJJAAAACJTCRsi3U4izqJRCRki0sE" & _
+    "iXQkYIt1PIl8JHCJTCRo6br2//9mg/gQD4QuAQAAZoP4EQ+EvgAAAA+2zw+2+YPHBzn+czSLRCRohcAPhO/t////TCRoifGLVCRwg8YID7Y6QolUJHDT5w+2zwF8JGAPttGDwgc51nLMD7bPMf8PttnTbCRgKd6D7geLTCRgwWwkYAeD4X+NWQuLVCQsi0QkPItMJDgB2gHIOcJ3L0uD+/8PhBz6//+J9o28JwAAAACLTCQsS2aJfE1wQYP7/4lNaIlMJCx16en3+f//i5QkkAAAAMdCGN+8uGHHRQAbAAAA6fH5//8PttcPtvqDxwM5/nM0i0wkaIXJD4Qx7f///0wkaInxi1QkcIPGCA+2OkKJVCRwD7bX0+cBfCRgD7b6g8cDOf5yzA+2zzH/D7bZ02wkYCneg+4Di0wkYMFsJGADg+EHjVkD6T3///8Pts8PtvmDxwI5/nM0i1QkaIXSD4TL7P///0wkaInxi3wkcIPGCA+2F0eJfCRw0+IPts8B" & _
+    "VCRgD7b5g8cCOf5yzA+2z4tcJCzTbCRgD7bJKc6F23Qai0QkLIPuAotMJGDBbCRgAg+3fEVug+ED64mLjCSQAAAAx0EY37y4YekM////ifaLRCRkhcAPhFTs//8Ptk1Ai1wkbIgLQ/9MJGSJXCRs6Xn9//+LVQiF0g+E6gAAAIP+H3cri3wkaIX/D4Qg7P///0wkaInxi0QkcIPGCA+2EP9EJHDT4gFUJGCD/h921YtMJGSLnCSQAAAAKUwkXItEJFwBQxQBRRyFwHQ1i30Qhf8PhBgBAACJRCQIi1wkbItEJFwpw4lcJASLVRiJFCToXGH//4lFGIuUJJAAAACJQjCLfRCLRCRki00Yhf+JRCRcD4XPAAAAi1QkYItcJGCLfCRgweoIgeIA/wAAwesYAdOB5wD/AACLVCRgwecIAfvB4hgB0znLdBOLjCSQAAAAx0EY+by4Yek06v//x0QkYAAAAACLVQgx9sdFABkAAACF0nRei0UQhcB0V4P+H3cs" & _
+    "i3wkaIX/D4Qk6////0wkaInxi1wkcIPGCA+2E0OJXCRw0+IBVCRgg/4fdtSLTCRgO00cdBOLhCSQAAAAx0AYDr24YenI6f//x0QkYAAAAAAx9sdFABoAAADHRCRYAQAAAOnK6v//OUwkYOlY////i1wkXIt8JGyJXCQIKd+JfCQEi00YiQwk6PQ7///p4/7//4tVCOlX////x0QkWP3////piur//8dFAAwAAAC4DAAAAOnV5///i5wkkAAAAItDBIlEJCjptuf//422AAAAAIPsDIlcJAiLXCQQhdt0EYtDHIXAdAqLUySF0nUTjXYAuP7///+LXCQIg8QMw412AItINIXJdReJRCQEi0soiQwk/9LHQxwAAAAAMcDr14lMJASLSyiJDCT/0otDHItTJOvVjbQmAAAAAI28JwAAAACD7ByJdCQQi3QkIIl8JBSLfCQohfaJbCQYi2wkJIlcJAwPhNkAAACLXhyF2w+EzgAAAItTCIXSD4TKAAAAgzsK" & _
+    "D4W6AAAAx0QkCAAAAADHRCQEAAAAAMcEJAAAAADo3jr//4kEJIl8JAiJbCQE6M46//87QxgPhX4AAACLVhCJNCSJVCQE6FYEAACFwHVei0soOc92O4tzNI0ELynIiUwkCIlEJASJNCToIzQAAItLKIlLLMdDDAEAAAAxwItcJAyLdCQQi3wkFItsJBiDxBzDi1M0iXwkCIlsJAQB0Sn5iQwk6OkzAACJeyzrx8cDHAAAALj8////68O4/f///+u8uP7////rtYM7Cg+Fa////+kx////jXQmAI28JwAAAACLRCQEi1QkCIXAdBqLQByFwHQT9kAIAnQNiVAgMcDHQjAAAAAAw7j+////w410JgBVV1ZTg+wci2wkMIXtdAeLdRyF9nUNuP7///+DxBxbXl9dw4t9BIX/dQqDfjwHD4Z/AQAAgz4dD4RqAQAAxwYdAAAAi1Y8Mf+J0YPhBynK02Y4g/oHiVY8diGNtgAAAAAPtk44iEw8GItWPEfBbjgI" & _
+    "g+oIg/oHiVY8d+XHRmgAAAAAjV5oMdKJXCQUiVwkDDHbOfpzRI10JgCNvCcAAAAAD7ZMHBiD+gEPtsEPhu8AAAA9/wAAAA+E2AAAALgEAAAAKdCJwjHAhMkPlcBIIcJDOftzBYP6A3bHi3wkFIkXi30Ei00Ai1ZoiUwkEDHJOflzToP6A3dJifaNvCcAAAAAi0QkEIP6AQ+2HAEPtsMPhnwAAAA9/wAAAHRtuAQAAAAp0InCMcCE2w+VwEghwkE5+XMNg/oDdsiQjbQmAAAAAIt8JAyLXCQQiReLfQgByylNBIldAAHPg35oBIl9CHUei10UiSwk6GXX//+JfQgxwIldFMcGCwAAAOmd/v//uP3////pk/7//0Lro5CNdCYAhcDrhULpNf///422AAAAAIXA6Q////+NVmiJVCQM6S////+4+////+le/v//jXYAi0QkBIXAdAeLUByF0nUGuP7////DMcCDOg10BMONdgCLSjyFyXX1uAEAAADr7on2" & _
+    "g+wsiWwkKItsJDCJdCQgi3QkNIXtiVwkHIl8JCR0IYX2dB2LXhyF23QWi1YghdJ0D4tGJIXAdSGQjbQmAAAAALj+////i1wkHIt0JCCLfCQki2wkKIPELMPHRCQIMCUAAMdEJAQBAAAAi34oiTwk/9KJRCQYi0wkGLj8////hcl0w8dEJBQAAAAAi0M0hcAPhbcAAAD8uQ4AAACJ7/OluDAlAACJ3ot8JBj2RCQYBHQTizO4LCUAAIk3i3wkGI1zBIPHBPyJwcHpAvOljYswBQAAi1NMOcpyI427LCUAADn6dxmLTCQYKdqLdCQYAdGLU1CJTkwp2gHyiVZQi1Nsi0wkGItEJBSLfCQYKdoByoXAiVdsdCGLSyS/AQAAAItzNItcJBTT54l8JAiJdCQEiRwk6FkwAACLTCQYMcCLVCQUiU0ciVE06fn+///HRCQIAQAAAL8BAAAAi0sk0+eJfCQEi1YoiRQk/1YgiUQkFIXAD4Ue////i2wkGIlsJASL" & _
+    "XiiJHCT/ViS4/P///+mz/v//jbQmAAAAAI28JwAAAABVV1ZTg+wMi1QkIItyHItuNIXtD4TpAAAAi04ohcl1HcdGMAAAAACLTiS/AQAAAMdGLAAAAADT54n5iX4oi1QkJInTi1QkIItCECnDOcsPg5AAAACLVjCJzynXOd92Aonfi0wkIItBDI0MKol8JAgp2IlEJASJDCTocy8AACn7dT+LXjCLVigB+4leMDnTdCCLRiw50HMMAfiNtCYAAAAAiUYsMdKDxAyJ0FteX13DkMdGMAAAAADr1420JgAAAACLRCQgi240i3gMiVwkCIksJCnfiXwkBOgULwAAiV4wi0Yo67yLWgyJTCQIiSwkKcuJXCQE6PcuAADHRjAAAAAA693HRCQIAQAAALsBAAAAi04k0+OLTCQgiVwkBItRKIkUJP9RILoBAAAAhcCJRjQPhHD///+Jxend/v//kJCQkIPsHItEJCyJXCQUi1wkIIXAiXQkGIt0JCh0BYA4MXQR" & _
+    "uPr///+LXCQUi3QkGIPEHMODfCQwOHXohdt0EoX2dA6DfCQkB34Hg3wkJA9+B7j+////69DHQxgAAAAAi1MghdJ1E8dDIBCwuGG6ELC4YcdDKAAAAACLSySFyXUHx0MkMLC4YcdEJAgwJQAAx0QkBAEAAACLSyiJDCT/0onChdK4/P///w+Eev///8dCFACAAAAxwItMJCSJUxy7AQAAAIlKJA+2TCQkiXI0x0IwAAAAAMdCLAAAAADT44laKOlC////kJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAQABEAEgAAAAgABwAJAAYACgAFAAsABAAMAAMADQACAA4AAQAPAJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQYAcAAAAIUAAACBAAFAhzABIHHwAACHAAAAgwAAAJwAAQBwoAAAhgAAAIIAAACaAAAAgAAAAIgAAACEAAAAngABAHBgAACFgAAAgYAAAJkAATBzsAAAh4AAAIOAAACdAA"
+Private Const STR_ZLIB_15 As String = _
+    "EQcRAAAIaAAACCgAAAmwAAAICAAACIgAAAhIAAAJ8AAQBwQAAAhUAAAIFAAVCOMAEwcrAAAIdAAACDQAAAnIABEHDQAACGQAAAgkAAAJqAAACAQAAAiEAAAIRAAACegAEAcIAAAIXAAACBwAAAmYABQHUwAACHwAAAg8AAAJ2AASBxcAAAhsAAAILAAACbgAAAgMAAAIjAAACEwAAAn4ABAHAwAACFIAAAgSABUIowATByMAAAhyAAAIMgAACcQAEQcLAAAIYgAACCIAAAmkAAAIAgAACIIAAAhCAAAJ5AAQBwcAAAhaAAAIGgAACZQAFAdDAAAIegAACDoAAAnUABIHEwAACGoAAAgqAAAJtAAACAoAAAiKAAAISgAACfQAEAcFAAAIVgAACBYAQAgAABMHMwAACHYAAAg2AAAJzAARBw8AAAhmAAAIJgAACawAAAgGAAAIhgAACEYAAAnsABAHCQAACF4AAAgeAAAJnAAUB2MAAAh+AAAIPgAACdwA" & _
+    "EgcbAAAIbgAACC4AAAm8AAAIDgAACI4AAAhOAAAJ/ABgBwAAAAhRAAAIEQAVCIMAEgcfAAAIcQAACDEAAAnCABAHCgAACGEAAAghAAAJogAACAEAAAiBAAAIQQAACeIAEAcGAAAIWQAACBkAAAmSABMHOwAACHkAAAg5AAAJ0gARBxEAAAhpAAAIKQAACbIAAAgJAAAIiQAACEkAAAnyABAHBAAACFUAAAgVABAIAgETBysAAAh1AAAINQAACcoAEQcNAAAIZQAACCUAAAmqAAAIBQAACIUAAAhFAAAJ6gAQBwgAAAhdAAAIHQAACZoAFAdTAAAIfQAACD0AAAnaABIHFwAACG0AAAgtAAAJugAACA0AAAiNAAAITQAACfoAEAcDAAAIUwAACBMAFQjDABMHIwAACHMAAAgzAAAJxgARBwsAAAhjAAAIIwAACaYAAAgDAAAIgwAACEMAAAnmABAHBwAACFsAAAgbAAAJlgAUB0MAAAh7AAAIOwAACdYA" & _
+    "EgcTAAAIawAACCsAAAm2AAAICwAACIsAAAhLAAAJ9gAQBwUAAAhXAAAIFwBACAAAEwczAAAIdwAACDcAAAnOABEHDwAACGcAAAgnAAAJrgAACAcAAAiHAAAIRwAACe4AEAcJAAAIXwAACB8AAAmeABQHYwAACH8AAAg/AAAJ3gASBxsAAAhvAAAILwAACb4AAAgPAAAIjwAACE8AAAn+AGAHAAAACFAAAAgQABQIcwASBx8AAAhwAAAIMAAACcEAEAcKAAAIYAAACCAAAAmhAAAIAAAACIAAAAhAAAAJ4QAQBwYAAAhYAAAIGAAACZEAEwc7AAAIeAAACDgAAAnRABEHEQAACGgAAAgoAAAJsQAACAgAAAiIAAAISAAACfEAEAcEAAAIVAAACBQAFQjjABMHKwAACHQAAAg0AAAJyQARBw0AAAhkAAAIJAAACakAAAgEAAAIhAAACEQAAAnpABAHCAAACFwAAAgcAAAJmQAUB1MAAAh8AAAIPAAACdkA" & _
+    "EgcXAAAIbAAACCwAAAm5AAAIDAAACIwAAAhMAAAJ+QAQBwMAAAhSAAAIEgAVCKMAEwcjAAAIcgAACDIAAAnFABEHCwAACGIAAAgiAAAJpQAACAIAAAiCAAAIQgAACeUAEAcHAAAIWgAACBoAAAmVABQHQwAACHoAAAg6AAAJ1QASBxMAAAhqAAAIKgAACbUAAAgKAAAIigAACEoAAAn1ABAHBQAACFYAAAgWAEAIAAATBzMAAAh2AAAINgAACc0AEQcPAAAIZgAACCYAAAmtAAAIBgAACIYAAAhGAAAJ7QAQBwkAAAheAAAIHgAACZ0AFAdjAAAIfgAACD4AAAndABIHGwAACG4AAAguAAAJvQAACA4AAAiOAAAITgAACf0AYAcAAAAIUQAACBEAFQiDABIHHwAACHEAAAgxAAAJwwAQBwoAAAhhAAAIIQAACaMAAAgBAAAIgQAACEEAAAnjABAHBgAACFkAAAgZAAAJkwATBzsAAAh5AAAIOQAACdMA" & _
+    "EQcRAAAIaQAACCkAAAmzAAAICQAACIkAAAhJAAAJ8wAQBwQAAAhVAAAIFQAQCAIBEwcrAAAIdQAACDUAAAnLABEHDQAACGUAAAglAAAJqwAACAUAAAiFAAAIRQAACesAEAcIAAAIXQAACB0AAAmbABQHUwAACH0AAAg9AAAJ2wASBxcAAAhtAAAILQAACbsAAAgNAAAIjQAACE0AAAn7ABAHAwAACFMAAAgTABUIwwATByMAAAhzAAAIMwAACccAEQcLAAAIYwAACCMAAAmnAAAIAwAACIMAAAhDAAAJ5wAQBwcAAAhbAAAIGwAACZcAFAdDAAAIewAACDsAAAnXABIHEwAACGsAAAgrAAAJtwAACAsAAAiLAAAISwAACfcAEAcFAAAIVwAACBcAQAgAABMHMwAACHcAAAg3AAAJzwARBw8AAAhnAAAIJwAACa8AAAgHAAAIhwAACEcAAAnvABAHCQAACF8AAAgfAAAJnwAUB2MAAAh/AAAIPwAACd8A" & _
+    "EgcbAAAIbwAACC8AAAm/AAAIDwAACI8AAAhPAAAJ/wAQBQEAFwUBARMFEQAbBQEQEQUFABkFAQQVBUEAHQUBQBAFAwAYBQECFAUhABwFASASBQkAGgUBCBYFgQBABQAAEAUCABcFgQETBRkAGwUBGBEFBwAZBQEGFQVhAB0FAWAQBQQAGAUBAxQFMQAcBQEwEgUNABoFAQwWBcEAQAUAAGludmFsaWQgYmxvY2sgdHlwZQBpbnZhbGlkIHN0b3JlZCBibG9jayBsZW5ndGhzAJCQkJCQkJCQkJCQkJCQkJB0b28gbWFueSBsZW5ndGggb3IgZGlzdGFuY2Ugc3ltYm9scwBpbnZhbGlkIGNvZGUgbGVuZ3RocyBzZXQAaW52YWxpZCBsaXRlcmFsL2xlbmd0aHMgc2V0AGludmFsaWQgZGlzdGFuY2VzIHNldABpbnZhbGlkIGxpdGVyYWwvbGVuZ3RoIGNvZGUAaW52YWxpZCBkaXN0YW5jZSBjb2Rl" & _
+    "AGludmFsaWQgZGlzdGFuY2UgdG9vIGZhciBiYWNrAGludmFsaWQgYml0IGxlbmd0aCByZXBlYXQAjbQmAAAAAFVXVlOD7FyLVCRwhdJ0C4tUJHCLehyF/3UNuP7///+DxFxbXl9dw8cHCwAAAItUJHDHRwQAAAAAx0csAAAAAIsKx0IYAAAAAMdEJFAAAAAAhcmJTCRYdAeLQgSJRCRQx0QkSAAAAACLdzQx7YtfKIl0JFSJXCRMiweD6AuD+BAPh3sOAAD/JIXM57hhEOi4YUD2uGE66bhhQPa4YbjquGFA9rhhQPa4YR7uuGFA9rhhQPa4YUD2uGFA9rhhQPa4YUD2uGFA9rhhTfa4YY72uGGLVwSF0nQYxwcaAAAAiem4GgAAAIPhBynN02wkSOuKg/0CdziNtgAAAACNvwAAAACLTCRQhckPhJ4AAAD/TCRQiemLdCRYg8UID7YWRol0JFjT4gFUJEiD/QJ21ItMJEhN0WwkSIPhAYtEJEiJTwSD" & _
+    "4AOD+AF0P4P4AXIyg/gCdCWD+AN0DcFsJEgCg+0C6RT////HBxsAAACLXCRwx0MYIOa4YevgxwcPAAAA69jHBw0AAADr0MdHTKDduGHHR1QJAAAAx0dQoOW4YcdHWAUAAADHBxIAAADrrItEJHiNXCRYiVwkBIkEJP9UJHSJRCRQhcAPhUP////HRCRYAAAAAMdEJDz7////jbQmAAAAAIt0JHCLRCRQi0wkWIlGBItEJDyJDukl/v//iemD4QcpzdNsJEiD/R93Mo22AAAAAIt0JFCF9g+EOAEAAP9MJFCJ6YtcJFiDxQgPtjNDiVwkWNPmAXQkSIP9H3bUD7dUJEiLTCRIwekQgfH//wAAOcp0G4tUJHDHQhgz5rhhxwcbAAAAuBsAAADpDP7//4lXQDHthdLHRCRIAAAAAHRhifaLdCRQi19AhfYPhKEAAACLVCRMhdJ0WDtcJFB2BItcJFA7XCRMdgSLXCRMiVwkCItUJFiLRCRUiVQkBIkEJOgN" & _
+    "IQAAKVwkUIt3QAFcJFgpXCRMKd4BXCRUhfaJd0B1occHCwAAALgLAAAA6Yr9//+LTyiLVzSLtCSAAAAAiU8siVQkVIlMJEyJTCQIiVQkBIk0JP9UJHzHRCQ8+////4XAD4Rx////6bX+//+QjXQmAItEJHiNTCRYiUwkBIkEJP9UJHSJRCRQhcAPhUD////pdf7//4tEJHiNVCRYiVQkBIkEJP9UJHSJRCRQhcAPhan+///pUf7//4P9DXcvjXYAi1wkUIXbD4RMCwAA/0wkUInpi1wkWIPFCA+2E0OJXCRY0+IBVCRIg/0NdtSLdCRIg+0OwWwkSAWD5h+LRCRIwWwkSAWBxgEBAACJd2CD4B+LVCRIwWwkSASNSAGD4g+JT2SDwgSB/h4BAACJV1x3BYP5HnYQi0wkcMdBGGDmuGHpWP7//8dHaAAAAACF0nRkg/0CdzeNdCYAjbwnAAAAAItUJFCF0g+EiAoAAP9MJFCJ6YtcJFiDxQgPthNDiVwk" & _
+    "WNPiAVQkSIP9AnbUi3dog+0Di0wkSMFsJEgDD7eENmDduGFGg+EHO3dciXdoZolMR3BynItXaIP6EnccD7ecEmDduGGNQgGD+BKJwmbHRF9wAAB254lHaMdHVAcAAACNnzAFAACNj/ACAACJX2yNR1SNV2yJX0yNd3CJXCQ4iUwkNIlMJBSJRCQwiUQkEIlUJCyJVCQMx0QkCBMAAACJdCQoiXQkBMcEJAAAAADoDgwAAIlEJDyFwHQQi3QkcMdGGITmuGHpU/3//8dHaAAAAACLX2SLd2AB8zlcJDwPg/wAAACLV1SLd0yJVCQYjXYAD7ZMJBi4AQAAAItcJEjT4Egh2Ischg+21w+2yjnpdlCLTCRQhcl0Hf9MJFCJ6YtcJFiDxQgPthNDiVwkWNPiAVQkSOu7i0QkeI10JFiJdCQEiQQk/1QkdIlEJFCFwA+ENfz//4tXVIt3TIlUJBjruInYwegQZoP4Dw+H5wYAAA+21w+2yjnNczGLdCRQhfYP"
+Private Const STR_ZLIB_16 As String = _
+    "hK0GAAD/TCRQiemLdCRYg8UID7YWRol0JFjT4g+2zwFUJEgPttE51XLPi3doD7bPwesQ02wkSA+2ySnNZolcd3BGi19giXdoifGLd2SJXCQci1wkHAHzOdkPggT///+LB4P4Gw+ET/r//8dHVAkAAACLdCQ4i1wkNItEJDCLVCQsiXdsiXdMi3QkKIlcJBSJRCQQiVQkDItPYIl0JATHBCQBAAAAiUwkCOiSCgAAhcB0EItMJHDHQRid5rhh6dv7///HR1gGAAAAi19sjVdYi0QkNItMJCyJX1CJVCQQiUQkFIlMJAyLd2SJdCQIi19gxwQkAgAAAI1UX3CJVCQE6DwKAACFwHQQi3QkcMdGGLnmuGHphfv//8cHEgAAAIN8JFAFD4aRAAAAgXwkTAEBAAAPhoMAAACLXCRwi1QkUItEJEyLTCRUiVMEiUMQi1coiUsMi3QkWIlvPItMJEg5VyyJM4lPOHMLi1wkTInVKd2JbyyJVCQEi2wkcIksJOjt" & _
+    "DwAAi1QkcItsJHCLXCRwi3IMi00Ai1UEiXQkVItDEIt3OIlMJFiLbzyJRCRMiVQkUIl0JEjp/fj//4tHVIt3TIlEJBiNtgAAAACNvwAAAAAPtkwkGLgBAAAAi1wkSNPgSCHYixyGD7bXD7bKOel2UItEJFCFwHQd/0wkUInpi1wkWIPFCA+2E0OJXCRY0+IBVCRI67uLdCR4jUwkWIlMJASJNCT/VCR0iUQkUIXAD4TV+f//i19Ui3dMiVwkGOu4hNsPhKsAAAD2w/APhaIAAACJXCREidnB6RCJTCQkifaLXCREuAEAAAAPttcPtsoPttMB0YtUJEjT4EgPts+LXCQkIdDT6A+2yQHYixyGD7bXD7bSAdE56XZJi0wkUIXJdB3/TCRQiemLXCRYg8UID7YTQ4lcJFjT4gFUJEjroYtEJHiNdCRYiXQkBIkEJP9UJHSJRCRQhcAPhCv5//+Ld0zrv4tUJEQPts7TbCRID7bJKc0Pts+J3sHuENNsJEgP" & _
+    "tskpzYl3QITbdWWLXCRMhdt0Iw+2X0C4EgAAAItMJFSIGUH/TCRMiUwkVMcHEgAAAOmD9///i1coi0c0i7QkgAAAAIlXLIlEJFSJVCRMiVQkCIlEJASJNCT/VCR8x0QkPPv///+FwHSq6bL4//+J9g+2w6ggD4Wk+f//qEB0EIt0JHDHRhjP5rhh6Q75//+D4A+FwIlHSHRNOcUPgwkDAACLRCRQhcAPhNkCAAD/TCRQiemLXCRYg8UID7YzQ4lcJFjT5otPSAF0JEg5zXLSi0QkSLoBAAAAKc3TbCRI0+JKIcIBV0CLT1iLd1CJTCQYD7ZMJBi4AQAAAItcJEjT4Egh2Ischg+2zw+20TnqdlCLRCRQhcB0Hf9MJFCJ6YtcJFiDxQgPthNDiVwkWNPiAVQkSOu7i3QkeI1UJFiJVCQEiTQk/1QkdIlEJFCFwA+Etff//4tPWIt3UIlMJBjruPbD8A+FoAAAAIlcJESJ2cHpEIlMJCCLXCREuAEAAAAP" & _
+    "ttcPtsoPttMB0YtUJEjT4EgPts+LXCQgIdDT6A+2yQHYixyGD7bXD7bSAdE56XZJi0QkUIXAdB3/TCRQiemLXCRYg8UID7YTQ4lcJFjT4gFUJEjroYt0JHiNTCRYiUwkBIk0JP9UJHSJRCRQhcAPhBX3//+Ld1Drv4tUJEQPts4PtvHTbCRIKfUPts8PtsPTbCRID7bJKc2oQHQQi0QkcMdAGOvmuGHpcff//4PgD8HrEIXAiV9EiUdIdE05xQ+DOgEAAItcJFCF2w+ECgEAAP9MJFCJ6YtcJFiDxQgPthNDiVwkWNPii09IAVQkSDnNctKLRCRIvgEAAAApzdNsJEjT5k4hxgF3RItXKDlXLInQcwaLTCRMKcg5R0R2EotcJHDHQxgB57hh6e/2//+J9ot0JEyF9nRmi0dEidMpwztcJExzTYt0JEyLVCRUKd4B2onzi0dAOcN2AonDKVwkTCnYiUdAjXQmAI28JwAAAAAPtgpCi3QkVIgORkuJdCRU" & _
+    "de6LV0CF0g+EqvT//4tXKOuei1QkVItcJEwpwuu1iVcsi180i4QkgAAAAIlUJEyJXCRUiVQkCIlcJASJBCT/VCR8x0QkPPv///+FwA+FzvX//4tXKOle////i3QkeI1MJFiJTCQEiTQk/1QkdIlEJFCFwA+F1/7//+mL9f//i09I6ez+//+LVCR4jUwkWIlMJASJFCT/VCR0iUQkUIXAD4UI/f//6V/1//+LT0jpHf3//4tEJHiNTCRYiUwkBIkEJP9UJHSJRCRQhcAPhTT5///pM/X//2aD+BAPhHABAABmg/gRD4TdAAAAD7bPD7bxg8YHOfVzNItEJFCFwA+EoAAAAP9MJFCJ6Yt0JFiDxQgPthZGiXQkWNPiAVQkSA+21w+2yoPBBznNcszHRCRAAAAAAA+2zw+22dNsJEgp3YPtB4tMJEjBbCRIB4Phf41ZC4tPaItHYI0UC4t3ZIlEJBwB8DnCdyZLg/v/D4Tg+P//i0QkQEuNUQGJV2iD+/9m" & _
+    "iURPcInRdenpxPj//4tEJHDHQBgf57hhxwcbAAAA6bz4//+LdCR4jVQkWIlUJASJNCT/VCR0iUQkUIXAD4VB////6UL0//8PttcPtsqDwQM5zXMwi3QkUIX2dFP/TCRQiemLdCRYg8UID7YWRol0JFjT4g+2zwFUJEgPttGDwgM51XLQx0QkQAAAAAAPts8PttnTbCRIKd2D7QOLTCRIwWwkSAOD4QeNWQPpIv///4tEJHiNTCRYiUwkBIkEJP9UJHSJRCRQhcB1kum68///kA+2zw+28YPGAjn1czCLVCRQhdJ0a/9MJFCJ6Yt0JFiDxQgPthZGiXQkWNPiAVQkSA+21w+2yoPBAjnNctAPts8Pttkp3dNsJEiLT2iFyXQgD7dcT26D7QKLdCRIwWwkSAKD5gOJXCRAjV4D6ZT+//+LVCRwx0IYH+e4YenI/v//i0QkeI10JFiJdCQEiQQk/1QkdIlEJFCFwA+Fdv///+kV8///i1wkeI10JFiJdCQE" & _
+    "iRwk/1QkdIlEJFCFwA+FWfX//+nx8v//i0wkeI10JFiJdCQEiQwk/1QkdIlEJFCFwA+FlfT//+nN8v//jXQmAMdEJDz+////6dPy///HRCQ8AQAAAItHKDlEJEwPg77y//+LXCRMKdiJRCQIi280i7wkgAAAAIlsJASJPCT/VCR8hcAPhJfy///pg/L//8dEJDz9////6YXy//+QjXQmAIPsDIlcJAiLXCQQhdt0DotDHIXAdAeLUySF0nUTuP7///+LXCQIg8QMw422AAAAAIlEJASLSyiJDCT/0sdDHAAAAAAxwOvbkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkCBpbmZsYXRlIDEuMi4zIENvcHlyaWdodCAxOTk1LTIwMDUgTWFyayBBZGxlciAAkJCQkJCQkJCQkJCQkJCQkJADAAQABQAGAAcACAAJAAoACwANAA8AEQATABcAGwAfACMAKwAzADsAQwBTAGMAcwCDAKMAwwDjAAIBAAAAAIn2" & _
+    "EAAQABAAEAAQABAAEAAQABEAEQARABEAEgASABIAEgATABMAEwATABQAFAAUABQAFQAVABUAFQAQAMkAxACJ9gEAAgADAAQABQAHAAkADQARABkAIQAxAEEAYQCBAMEAAQGBAQECAQMBBAEGAQgBDAEQARgBIAEwAUABYAAAAAAQABAAEAAQABEAEQASABIAEwATABQAFAAVABUAFgAWABcAFwAYABgAGQAZABoAGgAbABsAHAAcAB0AHQBAAEAAVVdWMfZTgeycAAAAi5wkuAAAAI22AAAAAI28JwAAAABmx0R0cAAARoP+D3bzx0QkTAAAAAA5XCRMcyqQjXQmAItMJEyLrCS0AAAA/0QkTA+3dE0AD7dUdHBCOVwkTGaJVHRwctvHRCREDwAAAIuUJMAAAACLMol0JECNtgAAAACLVCREZoN8VHAAdQdKiVQkRHXti0wkRDlMJEB2BIlMJEDHRCRIAQAAAItsJESF7XVPi4QkvAAAAIHnAP///4PP" & _
+    "QIn6ixi2AYnVgeX//wAAiSuLtCS8AAAAiw6NeQSJPolpBIucJMAAAACDBgTHAwEAAAAxwIHEnAAAAFteX13DkItUJEhmg3xUcAB1CkKD+g+JVCRIduqLTCRIOUwkQHMEiUwkQLoBAAAAvgEAAACJ9g+3THRwAdIpyngcRoP+D3bvhdJ+GYu0JLAAAACF9nQHg3wkRAF0B7j/////65Zmx0QkUgAAvgEAAAAPt2x0UA+3RHRwAcVmiWx0UkaD/g526cdEJEwAAAAAOVwkTHM+i0wkTIu0JLQAAAAPtwROZoXAdCAPt+gPt3RsUI1WAWaJVGxQi1QkTIusJMQAAABmiVR1AP9EJEw5XCRMcsKLnCSwAAAAhdsPhNsDAACDvCSwAAAAAQ+EsAMAAMdEJCTA97hhx0QkIAD4uGHHRCQc/////w+2TCRAx0QkOAEAAACLrCS8AAAAx0QkNAAAAACLdCRI02QkOItFAItsJEDHRCRMAAAAAItUJDiJRCQox0Qk" & _
+    "PAAAAABKg7wksAAAAAHHRCQw/////4lUJCwPhCIDAACJ8otEJEyJ+SpUJDyLnCTEAAAAiNUPtxRDic87VCQcD427AgAAweIQgecA/wAACdeLXCQ8ifG6AQAAACnZ0+KLXCQ0iVQkDInpugEAAADT4g+2TCQ8iVQkSNPrkI10JgCLTCQMKcqLTCQojQQahdKJPIF17I1W/7sBAAAAiNHT44VcJDSJXCQMdBSNtgAAAADRbCQMi0QkDIVEJDR18otcJAyF2w+EKQIAAItcJAyLTCQMSyFcJDQBTCQ0D7dMdHD/RCRMSWaFyWaJTHRwdSQ7dCRED4QPAQAAi7QkxAAAAItMJEyLnCS0AAAAD7cETg+3NEM7dCRAD4YD////i1wkNItEJCwhwztcJDAPhO/+//+LbCQ8he11CItUJECJVCQ8i2wkKItUJEiLRCQ8i1wkPI1MlQCJ9YlMJCgpxboBAAAAiemNBCvT4jtEJERzHJAPt1xEcCnahdJ+EItcJDxF"
+Private Const STR_ZLIB_17 As String = _
+    "AdKNBCs7RCREcuW6AQAAAInp0+IBVCQ4g7wksAAAAAF0UotEJCyLXCQ0i4wkvAAAACHDieiJXCQwi1QkMIsZiASTi4QkvAAAAIsYD7ZEJECIRJMBi5QkvAAAAItMJCiLGotUJDAp2cH5AmaJTJMC6Sz+//+BfCQ4rwUAALgBAAAAdp/prPz//4nxgecA////g89AKkwkPIn7i3QkNIjPid+B5///AACF9g+EmAAAALsBAAAAi0QkPIXAdDWLbCQ0i0wkLCHNO2wkMHQlx0QkPAAAAACLrCS8AAAAifiLdCRAimQkQItVAInHiVQkKI1W/w+2TCQ8i3QkNItsJCjT7ojRiXy1AIne0+aFdCQ0iXQkDHQO0WwkDItEJAyFRCQ0dfKLbCQMhe10P4t0JAyLTCQMTiF0JDQBTCQ0i2wkNIXtD4Vt////i1QkOIuMJLwAAACLXCRAweICi7wkwAAAAAERiR/pyfv//8dEJDQAAAAA68jHRCQ0AAAAAOnb/f//" & _
+    "O1QkHH4oi0QkIIHnAP///w+2HFCLRCQkCd8PtxxQgef//wAAweMQCd/pIv3//4HnAP///4PPYIHn//8AAOkO/f//gXwkOK8FAAC4AQAAAA+HX/v//+nG/P//x0QkJD71uGHHRCQgfvW4YcdEJBwAAQAA6Uv8///HRCQcEwAAAIuMJMQAAACJTCQgiUwkJOkv/P//kJCQkJCQkJCQkJCQkGludmFsaWQgbGl0ZXJhbC9sZW5ndGggY29kZQBpbnZhbGlkIGRpc3RhbmNlIGNvZGUAaW52YWxpZCBkaXN0YW5jZSB0b28gZmFyIGJhY2sAVVdWU4PsQItcJFSLVCRUi3QkWItrHItKBItaEIlsJDyLKineTYnvAc+D7wWLTCQ8iXwkOIt6DE+J+CnwjbQ7//7//4lEJDSLXCQ8i0EsiXQkMItMJDyLUyiJRCQoi3QkPIlUJCyLUTSLXjCJVCQgi1QkPIlcJCSLQkyLWjiLcjyJRCQci0pQuAEAAACJTCQY" & _
+    "i0pUicLT4onRi1QkPEmJTCQUi0pY0+BIiUQkEIP+DnccRYnxg8YID7ZVAEXT4gHTifGDxggPtlUA0+IB04tEJBQh2I22AAAAAI28JwAAAACLTCQcixSBD7bOD7bBiMEpxtPrD7bKhcmJDCQPhIQDAAD2BCQQD4XVAAAA9gQkQHUWD7YMJLgBAAAAweoQ0+BIIdiNBBDrufYEJCAPhaAAAACLTCRUx0EYIP64YYtEJDzHABsAAACJ8MHoA4nCweIDKcUp1onxugEAAADT4kqLTCRUIdM7bCQ4jVUBiRGNVwGJUQxzTSlsJDiLRCQ4g8AFO3wkMItsJFSJRQRzJil8JDCLRCQwBQEBAACLfCQ8i0wkVIlfOIlBEIl3PIPEQFteX13Di1QkMLgBAQAAKdcp+OvYi0wkOLgFAAAAKc0p6Ouvi1QkPMcCCwAAAOlm////weoQgyQkD4lUJAx0LDs0JHMORYnxg8YID7ZVANPiAdMPtgwkugEAAADT4koh2tPr" & _
+    "AVQkDIsMJCnOg/4OdxxFifGDxggPtlUARdPiAdOJ8YPGCA+2VQDT4gHTi0QkECHYi0wkGIsUgQ+2zg+2wYjBKcYPtsLT66gQiQQkdSz2BCRAdRYPtgwkuAEAAADB6hDT4Egh2I0EEOvHi1QkVMdCGDz+uGHps/7//4PgD8HqEDnGiVQkCIkEJHMhRYnxg8YID7ZVANPiAdM7NCRzDkWJ8YPGCA+2VQDT4gHTD7YMJLoBAAAAiwQk0+Ipxkoh2on40+sBVCQIi0wkNCnIOUQkCIkEJA+GbgEAAItMJAgpwYtEJCiJDCQ5wQ+HSQEAAItUJCCLTCQkSolUJASFyQ+FjwAAAItEJCyLDCQpyAHCi0QkDDkEJHMdiwwkKciJRCQMQkcPtgqID/8MJHX0i0wkCIn6KcqDfCQMAnYhQkcPtgpCiA9HD7YKQogPRw+2CogPg2wkDAODfCQMAnffi0QkDIXAdBVCRw+2CogPg3wkDAF2Bw+2SgFHiA87bCQ4D4Oz" & _
+    "/f//O3wkMA+CD/3//+mk/f//iwwkOUwkJHNqi0wkJItEJCwByIsMJCnIAcKLRCQkKQQki0QkDDkEJA+DdP///4sMJCnIiUQkDEJHD7YKiA//DCR19ItEJAyLVCQEOUQkJA+DTf///4tMJCQpyIkMJIlEJAxCRw+2CogP/wwkdfTpJ////4tEJCSLDCQpyAHCi0QkDDkEJA+DF////4sMJCnIiUQkDEJHD7YKiA//DCR19On1/v//i0wkVMdBGFL+uGHp5fz//4tMJAiJ+inKQkcPtgpCiA9HD7YKQogPRw+2CogPg2wkDAODfCQMAnff6ef+//9HweoQiBfp+f7//4tEJASFwHQFgzggdAa4VwAHgMPHQAQBAAAAx0AIAgAAAMdADAMAAADHQBABAAAAx0AY6wcDAMdAHAIAAQAxwMOD7CyLRCQ8iVwkHItcJDSD+AGJdCQgi3QkOIl8JCSLfCQwiWwkKHRNg/gCdDOFwI1sJBB1CIlcJBCJdCQUiWwk" & _
+    "BIk8JOgnCAAAi1wkHIt0JCCLfCQki2wkKIPELMONdgCLVxCNbCQQiRQk6BEIAAABwxHW68CJPCSNbCQQiWwkBOgLCAAAAVwkEBF0JBTrrpCD7ByNVCQQiVQkBItUJCCJFCTo6QcAAIXAuv////+5/////3UIi1QkEItMJBSJ0IPEHInKw5CQkJCQkJCQkJCQVYnluAEAAABdwgwAkJCQkFWJ5YPsCKFEELlhixCF0nUEiexdw/8QixVEELlhi0oEjUIEo0QQuWGFyXXp6+OJ9lWJ5YPsCIld/KEwDLlhg/j/dCmFwInDdRfHBCQgBLlh6JsM//+LXfyJ7F3DjXQmAP8UnTAMuWFLdfbr3YsNNAy5YTHAhcl0y7owDLlhjXYAQItMggSFyXX367iQjXQmAFWJ5YPsCIld/IsVQBC5YYXSdSehMAy5YboBAAAAiRVAELlhg/j/dCWFwInDdRPHBCQgBLlh6CYM//+LXfyJ7F3D/xSdMAy5YUt19uvhiw00" & _
+    "DLlhMcCFyXTPujAMuWGJ9kCLXIIEhdt19+u9kJCQkJBVuQAguWGB+QAguWGJ5XMWi1EEiwGDwQgBggAAuGGB+QAguWFy6l3DkJCQkJCQkJAtTElCR0NDVzMyLUVILVNKTEotR1RIUi1NSU5HVzMyAFWJ5YPsCKFQILlh/1AEiexdw420JgAAAACNvCcAAAAAVTHAieX8g+wIuQ4AAACJHCSLXQiJfCQEid/zq8cDOAAAAKEgILlhixVkELlhx0ME4Au5YYlDFKFgELlhiVMcx0Ms/////4lDGKEwILlhx0MIcAW5YcdDJAAAAACJQyihaBC5YYsVbBC5YYlDMIlTNIscJIt8JASJ7F3DkI10JgBVieWD7FiJXfihUCC5YYl1/IXAdAuLXfiLdfyJ7F3DkMdFuEFBQUGhUAW5YY11uMdFvEFBQUHHRcBBQUFBiUXYoVQFuWHHRcRBQUFBx0XIQUFBQYlF3KFYBblhx0XMQUFBQcdF0EFBQUGJReChXAW5" & _
+    "YcdF1EFBQUGJNCSJReShYAW5YYlF6KFkBblhiUXsoWgFuWGJRfChbAW5YYlF9Og9BQAAD7fAg+wEZoXAdWLHBCQ4AAAA6OYDAACFwInDdFyJBCTouP7//4kcJOhgAAAAZoXAdBuJHVAguWGNQwSjQCC5YY1DCKNgILlh6SX///+JHCToiAMAAIk0JOjgBAAAg+wED7fAjXYAjbwnAAAAAIkEJOjIAAAAicPrueivBAAA6w2QkJCQkJCQkJCQkJCQVbgfAAAAieVWugEAAABTg+xQi3UIjXQmAI28JwAAAACF8rFBdQKxYYhMBbgB0kh576FQBblhiUXYoVQFuWGJRdyhWAW5YYlF4KFcBblhiUXkoWAFuWGJReihZAW5YYlF7KFoBblhiUXwoWwFuWGJRfSNRbiJBCToRAQAAA+32IPsBGaF23ULMdKNZfiJ0FteXcOJHCToFgAAADnwidp15+vnjbQmAAAAAI28JwAAAABVieWNVbhTg+xUMdsPt0UI" & _
+    "x0QkCEAAAACJVCQEiQQk6PwDAACD7AyFwHQxuB8AAAC6AQAAAI10JgCNvCcAAAAAgHwFuEF0EQHSSHn0gzs4dQuJ2Itd/MnDCdPr6+iPAwAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkFWJ5VdWU4PsNItdDMdF2AAAAACLTQiLRRDHRdwAAAAAhduLVRTHReQAAAAAD4hyAQAAhdIPiF4BAACJVdSF0onGiU3Qid91aTnYdkiJyIna9/aJVdCNTeiFyXQZx0XcAAAAAItF0IlF2ItV2ItN3IlV6IlN7ItF5IXAdAr3XeiDVewA913si0Xoi1Xsg8Q0W15fXcOFwHULuAEAAAAx0vf2icaJ+ItV1Pf2i0XQ9/broTld1HYaiU3YiX3ci0XYi1XciUXoiVXs66uNtgAAAAAPvUXUicOD8x91KDt91HcFOXXQcguLVdAp8ht91IlV0I1N6IXJD4R6////iX3c6WD///+LVdS4IAAAAIjZKdiJ" & _
+    "RczT4onwD7ZNzNPoiNnT5gnCi0XQD7ZNzIlV1In60+qI2dPnD7ZNzNPoCceJ+IjZ93XU02XQidf35olFxDn6dzo5+nQujUXohcAPhBX///8Ptk3Mi0XQK0XEGdeJRdCJ+tPiiNnT6AnCiVXY0+/pNv///4tF0DlFxHbKi03EKfEbVdSJTcTrvffYg9IA99rplv7//8dF5P/////32YPTAPfb6Xv+//+QkJCQkJCQkJBRieGDwQg9ABAAAHIQgekAEAAAgwkALQAQAADr6SnBgwkAieCJzIsIi0AE/+CQkJD/JfBAuWGQkAAAAAAAAAAA/yX8QLlhkJAAAAAAAAAAAP8lGEG5YZCQAAAAAAAAAAD/JTBBuWGQkAAAAAAAAAAA/yUAQblhkJAAAAAAAAAAAP8lPEG5YZCQAAAAAAAAAAD/JRBBuWGQkAAAAAAAAAAA/yVMQblhkJAAAAAAAAAAAP8lVEG5YZCQAAAAAAAAAAD/JShBuWGQkAAAAAAAAAAA"
+Private Const STR_ZLIB_18 As String = _
+    "/yVEQblhkJAAAAAAAAAAAP8lQEG5YZCQAAAAAAAAAAD/JRRBuWGQkAAAAAAAAAAA/yUsQblhkJAAAAAAAAAAAP8lOEG5YZCQAAAAAAAAAAD/JUhBuWGQkAAAAAAAAAAA/yUkQblhkJAAAAAAAAAAAP8lUEG5YZCQAAAAAAAAAAD/JVhBuWGQkAAAAAAAAAAA/yUgQblhkJAAAAAAAAAAAP8lCEG5YZCQAAAAAAAAAAD/JTRBuWGQkAAAAAAAAAAA/yUEQblhkJAAAAAAAAAAAP8lHEG5YZCQAAAAAAAAAAD/JQxBuWGQkAAAAAAAAAAA/yXgQLlhkJAAAAAAAAAAAP8l3EC5YZCQAAAAAAAAAAD/JeRAuWGQkAAAAAAAAAAAVYnlXelHBf//kJCQkJCQkP////8gDLlhAAAAAP////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "wIS4YWCDuGEBAQAAHgEAAA8AAABAibhh4IO4YQAAAAAeAAAADwAAAAAAAABghLhhAAAAABMAAAAHAAAAAAAAAAAAAABADLlhAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP////8AAAAA/////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAV3beQgAAAAACMwEAAQAAAEkAAABJAAAAKDABAEwxAQBwMgEAAAMBAMCJAADAiwAAoI4AAECRAACQmwAAwI0AAHCcAACAEQAA0BMAAGAVAACgFAAAoBUAANA1AADgOwAAYGIAABBiAABwbwAAgG4AACBbAADAWgAAwGAAAHBgAABQXwAA8F0AAEBgAADQYQAAAFoAAMA1AAAwVAAAUFIAAOBPAADgPQAAsE8AACBTAACQSwAAgEgAACBJAACwPQAAkEoAACBLAABgSwAAoEUAAMBOAADgSwAAMD4AAIBPAADASAAAkEkAADC9AABA5wAAoPYAAGDcAACA2QAA" & _
+    "0NUAAGDXAABgsQAAYLIAAPCwAABgsAAAQNYAAJDXAABQ2QAAAPcAAHD+AABA+AAAQFkAAPCvAACgrwAAELAAADCwAADgrwAA0K8AAAwzAQAaMwEAJTMBADIzAQA8MwEATDMBAFUzAQBmMwEAcDMBAHgzAQCIMwEAkTMBAJszAQCpMwEArzMBAL0zAQDFMwEA0jMBAN4zAQDpMwEA9zMBAAQ0AQASNAEAHzQBACw0AQBBNAEAUjQBAF40AQBwNAEAfjQBAIk0AQCRNAEAmjQBAKI0AQCoNAEAsDQBALg0AQC/NAEAxjQBAM00AQDWNAEA3TQBAOQ0AQDrNAEA9DQBAPs0AQAHNQEADjUBABc1AQAfNQEAJzUBADM1AQBCNQEAUzUBAF81AQBqNQEAezUBAIk1AQCWNQEAozUBALA1AQDFNQEA0TUBAOI1AQD0NQEAATYBAA82AQAaNgEAITYBACo2AQAyNgEAOTYBAEo2AQAAAAEAAgADAAQABQAGAAcA" & _
+    "CAAJAAoACwAMAA0ADgAPABAAEQASABMAFAAVABYAFwAYABkAGgAbABwAHQAeAB8AIAAhACIAIwAkACUAJgAnACgAKQAqACsALAAtAC4ALwAwADEAMgAzADQANQA2ADcAOAA5ADoAOwA8AD0APgA/AEAAQQBCAEMARABFAEYARwBIAHpsaWIxLmRsbABEbGxHZXRWZXJzaW9uAF9kaXN0X2NvZGUAX2xlbmd0aF9jb2RlAF90cl9hbGlnbgBfdHJfZmx1c2hfYmxvY2sAX3RyX2luaXQAX3RyX3N0b3JlZF9ibG9jawBfdHJfdGFsbHkAYWRsZXIzMgBhZGxlcjMyX2NvbWJpbmUAY29tcHJlc3MAY29tcHJlc3MyAGNvbXByZXNzQm91bmQAY3JjMzIAY3JjMzJfY29tYmluZQBkZWZsYXRlAGRlZmxhdGVCb3VuZABkZWZsYXRlQ29weQBkZWZsYXRlRW5kAGRlZmxhdGVJbml0Ml8AZGVmbGF0ZUlu" & _
+    "aXRfAGRlZmxhdGVQYXJhbXMAZGVmbGF0ZVByaW1lAGRlZmxhdGVSZXNldABkZWZsYXRlU2V0RGljdGlvbmFyeQBkZWZsYXRlU2V0SGVhZGVyAGRlZmxhdGVUdW5lAGRlZmxhdGVfY29weXJpZ2h0AGdldF9jcmNfdGFibGUAZ3pjbGVhcmVycgBnemNsb3NlAGd6ZGlyZWN0AGd6ZG9wZW4AZ3plb2YAZ3plcnJvcgBnemZsdXNoAGd6Z2V0YwBnemdldHMAZ3pvcGVuAGd6cHJpbnRmAGd6cHV0YwBnenB1dHMAZ3pyZWFkAGd6cmV3aW5kAGd6c2VlawBnenNldHBhcmFtcwBnenRlbGwAZ3p1bmdldGMAZ3p3cml0ZQBpbmZsYXRlAGluZmxhdGVCYWNrAGluZmxhdGVCYWNrRW5kAGluZmxhdGVCYWNrSW5pdF8AaW5mbGF0ZUNvcHkAaW5mbGF0ZUVuZABpbmZsYXRlR2V0SGVhZGVyAGluZmxh" & _
+    "dGVJbml0Ml8AaW5mbGF0ZUluaXRfAGluZmxhdGVQcmltZQBpbmZsYXRlUmVzZXQAaW5mbGF0ZVNldERpY3Rpb25hcnkAaW5mbGF0ZVN5bmMAaW5mbGF0ZVN5bmNQb2ludABpbmZsYXRlX2NvcHlyaWdodABpbmZsYXRlX2Zhc3QAaW5mbGF0ZV90YWJsZQB1bmNvbXByZXNzAHpFcnJvcgB6X2Vycm1zZwB6Y2FsbG9jAHpjZnJlZQB6bGliQ29tcGlsZUZsYWdzAHpsaWJWZXJzaW9uAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFRAAQAAAAAAAAAAALxCAQDcQAEAaEABAAAAAAAAAAAA0EIBAPBAAQB0QAEAAAAAAAAAAAA8QwEA/EABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGBBAQBsQQEAeEEBAAAAAAAAAAAAiEEBAAAAAAAAAAAAlEEBAKRBAQCwQQEA" & _
+    "xEEBANRBAQDcQQEA6EEBAPRBAQAAQgEADEIBABRCAQAgQgEAKEIBADBCAQA4QgEAREIBAFBCAQBcQgEAaEIBAHRCAQCAQgEAjEIBAJhCAQCkQgEAAAAAAAAAAABgQQEAbEEBAHhBAQAAAAAAAAAAAIhBAQAAAAAAAAAAAJRBAQCkQQEAsEEBAMRBAQDUQQEA3EEBAOhBAQD0QQEAAEIBAAxCAQAUQgEAIEIBAChCAQAwQgEAOEIBAERCAQBQQgEAXEIBAGhCAQB0QgEAgEIBAIxCAQCYQgEApEIBAAAAAAABAEFkZEF0b21BAACvAEZpbmRBdG9tQQDcAEdldEF0b21OYW1lQQAAGABfZmRvcGVuAAAAJABfX2RsbG9uZXhpdAAAAJgAX2Vycm5vAAAAAK0AX2ZpbGVsZW5ndGhpNjQAAAAAvQFfdnNucHJpbnRmAAAAABUCYWJvcnQAIwJjbGVhcmVycgAALQJmY2xvc2UAAAAAMAJmZmx1c2gAAAAA"
+Private Const STR_ZLIB_19 As String = _
+    "MgJmZ2V0cG9zAAAAOAJmb3BlbgA5AmZwcmludGYAAAA6AmZwdXRjAD4CZnJlYWQAPwJmcmVlAABEAmZzZXRwb3MAAABHAmZ3cml0ZQAAAAByAm1hbGxvYwAAAAB4Am1lbWNweQAAAAB6Am1lbXNldAAAAACTAnNwcmludGYAAACXAnN0cmNhdAAAAACbAnN0cmNweQAAAACdAnN0cmVycm9yAACfAnN0cmxlbgAAAAAAQAEAAEABAABAAQBLRVJORUwzMi5kbGwAAAAAFEABAG1zdmNydC5kbGwAAChAAQAoQAEAKEABAChAAQAoQAEAKEABAChAAQAoQAEAKEABAChAAQAoQAEAKEABAChAAQAoQAEAKEABAChAAQAoQAEAKEABAChAAQAoQAEAKEABAChAAQAoQAEAKEABAG1zdmNydC5kbGwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVnbeQgAAAAAAAAMAAwAAACgAAIAOAAAAWAAAgBAAAACIAACAAAAAAFZ23kIAAAAAAAABAAEAAABAAACAAAAAAFZ23kIAAAAAAAABAAkEAAC4AAAAAAAAAFZ23kIAAAAAAAABAPQBAABwAACAAAAAAFZ23kIAAAAAAAABAAkEAADIAAAAAAAAAFZ23kIAAAAAAAABAAEAAACgAACAAAAAAFZ23kIAAAAAAAABAAkEAADYAAAA6FABAOgCAAAAAAAAAAAAANBTAQAUAAAAAAAAAAAAAADkUwEAdAwAAAAAAAAAAAAAKAAAACAAAABAAAAAAQAEAAAAAACAAgAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAIAAAACAgACAAAAAgACAAICAAADAwMAAgICAAAAA/wAA/wAAAP//AP8AAAD/AP8A//8AAP///wD//wAP//D///D////w/////wAAAP/wL//wj///AA////IiIiD/8gD/8gj/8AIi///yIiIgD/Ig//Ig//AiIi//8iIiIg/yIv/yIv/wIiIv//IiIiIA8iL/8iL/IiIiIv/3Ii/yJ/Ii//Ii/yIiL/Iv/yII///yIv/yIv8iIv/yL/9yAP//8iL/8iL/IiL/8ij/8iD///Ii//Ii/yIi//Ai//8gD//yIv/yIv8iIv8AIv//IA//8iL/8iL/Iij/ACL/AAIA//Ii//Ii/yIv/wIi/wACII/yIv8iIv8iL/ACIvIiIiAP8iL/IiL/IiAAAiLyIiIiAvIi/yIi/yIvACIi8iIiIg/yIv8iIv8iLyIiIv8iIiIv8iL/+iL/Ii9yIi//co/4L/Ii//Ki/yIv8iIv" & _
+    "//L////yKv/yov8iL/+C////////8iL/IiD/Io////////////Iq/yog/yIv///////////yKv8qov8iL///////////Air/qqoAIi///////////wIq//iiICIv//////////ACKv//r4AiL//////////yIir////yIi///////////yIi////8iIv///////////yIv////8oL////////////yL/////8i/////////////y//////8v/////////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEAICAQAAEABADoAgAAAQB0DDQAAABWAFMAXwBWAEUAUgBTAEkATwBOAF8A" & _
+    "SQBOAEYATwAAAAAAvQTv/gAAAQACAAEA6wcDAAIAAQDrBwMAPwAAACAAAAAEAAAAAgAAAAAAAAAAAAAAAAAAANQLAAAAAFMAdAByAGkAbgBnAEYAaQBsAGUASQBuAGYAbwAAALALAAAAADAANAAwADkAMAA0AEUANAAAACoABQABAEMAbwBtAHAAYQBuAHkATgBhAG0AZQAAAAAAWgBsAGkAYgAAAAAASAeYAwEATABpAGMAZQBuAHMAZQAAAAAAKABDACkAIAAxADkAOQA1AC0AMgAwADAAMgAgAEoAZQBhAG4ALQBsAG8AdQBwACAARwBhAGkAbABsAHkAIABhAG4AZAAgAE0AYQByAGsAIABBAGQAbABlAHIAIABUAGgAaQBzACAAcwBvAGYAdAB3AGEAcgBlACAAaQBzACAAcAByAG8AdgBpAGQAZQBkACAAJwBhAHMALQBpAHMAJwAsACAAdwBpAHQAaABvAHUAdAAgAGEAbgB5ACAAZQB4AHAA" & _
+    "cgBlAHMAcwAgAG8AcgAgAGkAbQBwAGwAaQBlAGQAIAB3AGEAcgByAGEAbgB0AHkALgAgAEkAbgAgAG4AbwAgAGUAdgBlAG4AdAAgAHcAaQBsAGwAIAB0AGgAZQAgAGEAdQB0AGgAbwByAHMAIABiAGUAIABoAGUAbABkACAAbABpAGEAYgBsAGUAIABmAG8AcgAgAGEAbgB5ACAAZABhAG0AYQBnAGUAcwAgAGEAcgBpAHMAaQBuAGcAIABmAHIAbwBtACAAdABoAGUAIAB1AHMAZQAgAG8AZgAgAHQAaABpAHMAIABzAG8AZgB0AHcAYQByAGUALgAgAFAAZQByAG0AaQBzAHMAaQBvAG4AIABpAHMAIABnAHIAYQBuAHQAZQBkACAAdABvACAAYQBuAHkAbwBuAGUAIAB0AG8AIAB1AHMAZQAgAHQAaABpAHMAIABzAG8AZgB0AHcAYQByAGUAIABmAG8AcgAgAGEAbgB5ACAAcAB1AHIAcABvAHMA" & _
+    "ZQAsACAAaQBuAGMAbAB1AGQAaQBuAGcAIABjAG8AbQBtAGUAcgBjAGkAYQBsACAAYQBwAHAAbABpAGMAYQB0AGkAbwBuAHMALAAgAGEAbgBkACAAdABvACAAYQBsAHQAZQByACAAaQB0ACAAYQBuAGQAIAByAGUAZABpAHMAdAByAGkAYgB1AHQAZQAgAGkAdAAgAGYAcgBlAGUAbAB5ACwAIABzAHUAYgBqAGUAYwB0ACAAdABvACAAdABoAGUAIABmAG8AbABsAG8AdwBpAG4AZwAgAHIAZQBzAHQAcgBpAGMAdABpAG8AbgBzADoAIAAxAC4AIABUAGgAZQAgAG8AcgBpAGcAaQBuACAAbwBmACAAdABoAGkAcwAgAHMAbwBmAHQAdwBhAHIAZQAgAG0AdQBzAHQAIABuAG8AdAAgAGIAZQAgAG0AaQBzAHIAZQBwAHIAZQBzAGUAbgB0AGUAZAA7ACAAeQBvAHUAIABtAHUAcwB0ACAAbgBvAHQA" & _
+    "IABjAGwAYQBpAG0AIAB0AGgAYQB0ACAAeQBvAHUAIAB3AHIAbwB0AGUAIAB0AGgAZQAgAG8AcgBpAGcAaQBuAGEAbAAgAHMAbwBmAHQAdwBhAHIAZQAuACAASQBmACAAeQBvAHUAIAB1AHMAZQAgAHQAaABpAHMAIABzAG8AZgB0AHcAYQByAGUAIABpAG4AIABhACAAcAByAG8AZAB1AGMAdAAsACAAYQBuACAAYQBjAGsAbgBvAHcAbABlAGQAZwBtAGUAbgB0ACAAaQBuACAAdABoAGUAIABwAHIAbwBkAHUAYwB0ACAAZABvAGMAdQBtAGUAbgB0AGEAdABpAG8AbgAgAHcAbwB1AGwAZAAgAGIAZQAgAGEAcABwAHIAZQBjAGkAYQB0AGUAZAAgAGIAdQB0ACAAaQBzACAAbgBvAHQAIAByAGUAcQB1AGkAcgBlAGQALgAgADIALgAgAEEAbAB0AGUAcgBlAGQAIABzAG8AdQByAGMAZQAgAHYA" & _
+    "ZQByAHMAaQBvAG4AcwAgAG0AdQBzAHQAIABiAGUAIABwAGwAYQBpAG4AbAB5ACAAbQBhAHIAawBlAGQAIABhAHMAIABzAHUAYwBoACwAIABhAG4AZAAgAG0AdQBzAHQAIABuAG8AdAAgAGIAZQAgAG0AaQBzAHIAZQBwAHIAZQBzAGUAbgB0AGUAZAAgAGEAcwAgAGIAZQBpAG4AZwAgAHQAaABlACAAbwByAGkAZwBpAG4AYQBsACAAcwBvAGYAdAB3AGEAcgBlAC4AIAAzAC4AIABUAGgAaQBzACAAbgBvAHQAaQBjAGUAIABtAGEAeQAgAG4AbwB0ACAAYgBlACAAcgBlAG0AbwB2AGUAZAAgAG8AcgAgAGEAbAB0AGUAcgBlAGQAIABmAHIAbwBtACAAYQBuAHkAIABzAG8AdQByAGMAZQAgAGQAaQBzAHQAcgBpAGIAdQB0AGkAbwBuAC4AIABKAGUAYQBuAC0AbABvAHUAcAAgAEcAYQBpAGwA" & _
+    "bAB5ACAATQBhAHIAawAgAEEAZABsAGUAcgAgAGoAbABvAHUAcABAAGcAegBpAHAALgBvAHIAZwAgAG0AYQBkAGwAZQByAEAAYQBsAHUAbQBuAGkALgBjAGEAbAB0AGUAYwBoAC4AZQBkAHUAIAAAAKYAPwABAEYAaQBsAGUARABlAHMAYwByAGkAcAB0AGkAbwBuAAAAAABaAGwAaQBiADoAIABnAGUAbgBlAHIAYQBsACAAcAB1AHIAcABvAHMAZQAgAGQAYQB0AGEAIABjAG8AbQBwAHIAZQBzAHMAaQBvAG4AIAAvACAAZABlAGMAbwBtAHAAcgBlAHMAcwBpAG8AbgAgAGwAaQBiAHIAYQByAHkAAAAAADYACwABAEYAaQBsAGUAVgBlAHIAcwBpAG8AbgAAAAAAMQAuADIALgAzAC4AMgAwADIANwAAAAAAqgA/AAEATABpAGIAVABvAG8AbABGAGkAbABlAFYAZQByAHMAaQBvAG4AAABaAGwA"
+Private Const STR_ZLIB_20 As String = _
+    "aQBiADoAIABnAGUAbgBlAHIAYQBsACAAcAB1AHIAcABvAHMAZQAgAGQAYQB0AGEAIABjAG8AbQBwAHIAZQBzAHMAaQBvAG4AIAAvACAAZABlAGMAbwBtAHAAcgBlAHMAcwBpAG8AbgAgAGwAaQBiAHIAYQByAHkAAAAAACwABgABAEkAbgB0AGUAcgBuAGEAbABOAGEAbQBlAAAAegBsAGkAYgAxAAAAyABSAAEATABlAGcAYQBsAEMAbwBwAHkAcgBpAGcAaAB0AAAAqQAgADIAMAAwADUAIABKAGUAYQBuAC0AbABvAHUAcAAgAEcAYQBpAGwAbAB5ACAAPABqAGwAbwB1AHAAQABnAHoAaQBwAC4AbwByAGcAIAA+ACwAIABNAGEAcgBrACAAQQBkAGwAZQByACAAPABtAGEAZABsAGUAcgBAAGEAbAB1AG0AbgBpAC4AYwBhAGwAdABlAGMAaAAuAGUAZAB1AD4AAABSABUAAQBMAGUAZwBhAGwA" & _
+    "VAByAGEAZABlAG0AYQByAGsAcwAAAAAAWgBsAGkAYgCuACwAIABaAGwAaQBiAK4ALAAgAHoAbABpAGIAMQCuAAAAAAA8AAoAAQBPAHIAaQBnAGkAbgBhAGwARgBpAGwAZQBuAGEAbQBlAAAAegBsAGkAYgAxAC4AZABsAGwAAAAqAAUAAQBQAHIAbwBkAHUAYwB0AE4AYQBtAGUAAAAAAFoAbABpAGIAAAAAADoACwABAFAAcgBvAGQAdQBjAHQAVgBlAHIAcwBpAG8AbgAAADEALgAyAC4AMwAuADIAMAAyADcAAAAAAHIAKQABAFMAcABlAGMAaQBhAGwAQgB1AGkAbABkAAAARwBOAFUAIABmAG8AcgAgAFcAaQBuADMAMgAgADwAZwBuAHUAdwBpAG4AMwAyAC4AcwBvAHUAcgBjAGUAZgBvAHIAZwBlAC4AbgBlAHQAPgAAAAAAOAAUAAEAVwBXAFcAAAAAAGgAdAB0AHAAOgAvAC8AdwB3AHcA" & _
+    "LgB6AGwAaQBiAC4AbgBlAHQAAABEAAAAAABWAGEAcgBGAGkAbABlAEkAbgBmAG8AAAAAACQABAAAAFQAcgBhAG4AcwBsAGEAdABpAG8AbgAAAAAACQTkBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" & _
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAIAAAADowfTCMMLswxTDoMAQxGjElMUoxVTH9NAAwAACkAAAAwTUfNlA2VzZmNnQ2jDaWNqI2sDbINtI23jbsNgQ3CzcaNyo3QDdKN1Y3ZDd8N4Y3kjegN7g3vzfON9w39Df7Nw04GzhTOF04aTh3OJ84ETlTOV05aTl3OY85ljmlObM5yznVOeE57zkEOgs6GjorOkM6SjpZOmc6fzqJOpU6ozq7OsU60TrfOvQ6+zoNOxs7UztdO2k7dzuhOwE+AFAAADQAAABHM3EztzPxMyc0JzYfN3k3kTlIOlQ6YDpsOng6hDqQOpw6qDq0OqE7tjurPQBgAAAcAAAA" & _
+    "PDFGMWYxbTF0MYExjDP6NV4+AAAAcAAAJAAAAAwyLjJCMk8yyTXsNQU2ujfLNy07UDtpO8Y81zwAgAAADAAAABc/Oz8AkAAANAAAAB4wPjC4MPUw8zFRNFk0gzYbNyY3tzc7OEo4GjmjO7o70TvlPAw9Ij1GPVg9AKAAACQAAACiNVM2oD+kP6g/rD+wP7Q/uD+8P8A/xD/RP/4/ALAAAFQAAAC0MbkxzjHIPcw90D3UPdg93D3gPeQ96D3sPfA99D34Pfw9AD4EPgg+DD4QPhQ+GD4cPiA+JD4oPiw+MD40Pjg+PD5APgQ/Nz9ePwAAAMAAACQAAADhMQIyPzXnOAI5EDm8ObY6JTtGO7Y7Oj2PPew+ANAAABwAAABeMOYw1jLFM9M0PzXGPMs84DwAAADgAABAAAAAyDfMN9A31DfYN9w34DfkN+g37DfwN/Q3+Df8NwA4BDgIOAw4sDjJONc4mTk8O587wDtBPLk9Dz4A8AAAHAAAAIYwIzKlMpQ0" & _
+    "xzUuOjY63j3mPag/AAABAKgAAADwML4yJzQ5NEQ0WjRsNIM0jjSZNLs0xDTPNOE09DT/NAo1IjUoNTo1QDV3NbM1uTXANcg12jXhNfA19jUaNjg2UTZnNn02jzaXNp82pzbnNu829zZyN3o3gjeKN5I3mjeiN6o3YjpyOoI6kjqiOrI6wjrSOuI68joCOxI7IjsyO0I7UjtiO3I7gjuSO6I7sjvCO9I74jvyOwI8Ejw0PAAAABABABQAAAAAMAQwFDAYMCwwRDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+Private Const STR_ZLIB_COUNT As Long = 20
+
+
+'=========================================================================
 ' API
 '=========================================================================
+
+'--- zlib1.dll API (opsional, untuk kompresi yang lebih baik)
+Private Declare Function zlib_compress2 Lib "zlib1.dll" Alias "compress2" (ByVal dest As Long, destLen As Long, ByVal Source As Long, ByVal sourceLen As Long, ByVal Level As Long) As Long
+Private Declare Function zlib_uncompress Lib "zlib1.dll" Alias "uncompress" (ByVal dest As Long, destLen As Long, ByVal Source As Long, ByVal sourceLen As Long) As Long
+Private Declare Function zlib_deflateInit2 Lib "zlib1.dll" Alias "deflateInit2_" (ByRef strm As z_stream, ByVal Level As Long, ByVal Method As Long, ByVal windowBits As Long, ByVal memLevel As Long, ByVal strategy As Long, ByVal version As String, ByVal stream_size As Long) As Long
+Private Declare Function zlib_deflate Lib "zlib1.dll" Alias "deflate" (ByRef strm As z_stream, ByVal flush As Long) As Long
+Private Declare Function zlib_deflateEnd Lib "zlib1.dll" Alias "deflateEnd" (ByRef strm As z_stream) As Long
+Private Declare Function zlib_inflateInit2 Lib "zlib1.dll" Alias "inflateInit2_" (ByRef strm As z_stream, ByVal windowBits As Long, ByVal version As String, ByVal stream_size As Long) As Long
+Private Declare Function zlib_inflate Lib "zlib1.dll" Alias "inflate" (ByRef strm As z_stream, ByVal flush As Long) As Long
+Private Declare Function zlib_inflateEnd Lib "zlib1.dll" Alias "inflateEnd" (ByRef strm As z_stream) As Long
+Private Declare Function zlib_crc32 Lib "zlib1.dll" Alias "crc32" (ByVal crc As Long, ByVal buf As Long, ByVal Len As Long) As Long
+Private Declare Function zlib_zlibVersion Lib "zlib1.dll" Alias "zlibVersion" () As Long
+Private Declare Function zlib_compressBound Lib "zlib1.dll" Alias "compressBound" (ByVal sourceLen As Long) As Long
+Private Declare Function LoadLibrary Lib "kernel32" Alias "LoadLibraryW" (ByVal lpLibFileName As Long) As Long
+Private Declare Function FreeLibrary Lib "kernel32" (ByVal hLibModule As Long) As Long
+Private Declare Function lstrlenA Lib "kernel32" (ByVal lpString As Long) As Long
+Private Declare Function lstrlenW Lib "kernel32" (ByVal lpString As Long) As Long
+
+'--- archiveint.dll API (libarchive, bawaan Windows 11 23H2+)
+Private Declare Function arc_read_new Lib "archiveint.dll" Alias "archive_read_new" () As Long
+Private Declare Function arc_read_free Lib "archiveint.dll" Alias "archive_read_free" (ByVal h As Long) As Long
+Private Declare Function arc_read_close Lib "archiveint.dll" Alias "archive_read_close" (ByVal h As Long) As Long
+Private Declare Function arc_read_support_format_all Lib "archiveint.dll" Alias "archive_read_support_format_all" (ByVal h As Long) As Long
+Private Declare Function arc_read_support_filter_all Lib "archiveint.dll" Alias "archive_read_support_filter_all" (ByVal h As Long) As Long
+Private Declare Function arc_read_open_filename Lib "archiveint.dll" Alias "archive_read_open_filename" (ByVal h As Long, ByVal fn As Long, ByVal blockSize As Long) As Long
+Private Declare Function arc_read_next_header Lib "archiveint.dll" Alias "archive_read_next_header" (ByVal h As Long, hEntry As Long) As Long
+Private Declare Function arc_read_data Lib "archiveint.dll" Alias "archive_read_data" (ByVal h As Long, ByVal pData As Long, ByVal dataSize As Long) As Long
+Private Declare Function arc_read_add_passphrase Lib "archiveint.dll" Alias "archive_read_add_passphrase" (ByVal h As Long, ByVal pw As Long) As Long
+Private Declare Function arc_write_new Lib "archiveint.dll" Alias "archive_write_new" () As Long
+Private Declare Function arc_write_free Lib "archiveint.dll" Alias "archive_write_free" (ByVal h As Long) As Long
+Private Declare Function arc_write_close Lib "archiveint.dll" Alias "archive_write_close" (ByVal h As Long) As Long
+Private Declare Function arc_write_open_filename Lib "archiveint.dll" Alias "archive_write_open_filename" (ByVal h As Long, ByVal fn As Long) As Long
+Private Declare Function arc_write_header Lib "archiveint.dll" Alias "archive_write_header" (ByVal h As Long, ByVal entry As Long) As Long
+Private Declare Function arc_write_data Lib "archiveint.dll" Alias "archive_write_data" (ByVal h As Long, ByVal pData As Long, ByVal dataSize As Long) As Long
+Private Declare Function arc_write_finish_entry Lib "archiveint.dll" Alias "archive_write_finish_entry" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_format_zip Lib "archiveint.dll" Alias "archive_write_set_format_zip" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_format_7zip Lib "archiveint.dll" Alias "archive_write_set_format_7zip" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_format_ustar Lib "archiveint.dll" Alias "archive_write_set_format_ustar" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_format_pax Lib "archiveint.dll" Alias "archive_write_set_format_pax_restricted" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_format_cpio Lib "archiveint.dll" Alias "archive_write_set_format_cpio" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_format_xar Lib "archiveint.dll" Alias "archive_write_set_format_xar" (ByVal h As Long) As Long
+Private Declare Function arc_write_add_filter_none Lib "archiveint.dll" Alias "archive_write_add_filter_none" (ByVal h As Long) As Long
+Private Declare Function arc_write_add_filter_gzip Lib "archiveint.dll" Alias "archive_write_add_filter_gzip" (ByVal h As Long) As Long
+Private Declare Function arc_write_add_filter_bzip2 Lib "archiveint.dll" Alias "archive_write_add_filter_bzip2" (ByVal h As Long) As Long
+Private Declare Function arc_write_add_filter_xz Lib "archiveint.dll" Alias "archive_write_add_filter_xz" (ByVal h As Long) As Long
+Private Declare Function arc_write_add_filter_zstd Lib "archiveint.dll" Alias "archive_write_add_filter_zstd" (ByVal h As Long) As Long
+Private Declare Function arc_write_set_options Lib "archiveint.dll" Alias "archive_write_set_options" (ByVal h As Long, ByVal opts As Long) As Long
+Private Declare Function arc_entry_new Lib "archiveint.dll" Alias "archive_entry_new" () As Long
+Private Declare Sub arc_entry_free Lib "archiveint.dll" Alias "archive_entry_free" (ByVal entry As Long)
+Private Declare Sub arc_entry_set_pathname_utf8 Lib "archiveint.dll" Alias "archive_entry_set_pathname_utf8" (ByVal entry As Long, ByVal pathname As Long)
+Private Declare Sub arc_entry_set_size Lib "archiveint.dll" Alias "archive_entry_set_size" (ByVal entry As Long, ByVal sz As Long)
+Private Declare Sub arc_entry_set_filetype Lib "archiveint.dll" Alias "archive_entry_set_filetype" (ByVal entry As Long, ByVal ft As Long)
+Private Declare Sub arc_entry_set_perm Lib "archiveint.dll" Alias "archive_entry_set_perm" (ByVal entry As Long, ByVal perm As Long)
+Private Declare Function arc_entry_pathname_w Lib "archiveint.dll" Alias "archive_entry_pathname_w" (ByVal hEntry As Long) As Long
+Private Declare Function arc_entry_size Lib "archiveint.dll" Alias "archive_entry_size" (ByVal hEntry As Long) As Long
+Private Declare Function arc_entry_filetype Lib "archiveint.dll" Alias "archive_entry_filetype" (ByVal hEntry As Long) As Long
+Private Declare Function arc_error_string Lib "archiveint.dll" Alias "archive_error_string" (ByVal h As Long) As Long
+Private Declare Function arc_version_string Lib "archiveint.dll" Alias "archive_version_string" () As Long
+'--- archiveint constants
+Private Const ARC_OK As Long = 0
+Private Const ARC_EOF As Long = 1
+Private Const ARC_WARN As Long = -20
+Private Const ARC_IFREG As Long = &H8000&
+Private Const ARC_IFDIR As Long = &H4000&
+Private Const ARC_PERM_FILE As Long = &H1A4
+Private Const ARC_PERM_DIR As Long = &H1ED
+Private Const ARC_BLOCK_SIZE As Long = 65536
+
+'--- zlib constants
+Private Const Z_OK                          As Long = 0
+Private Const Z_STREAM_END                  As Long = 1
+Private Const Z_FINISH                      As Long = 4
+Private Const Z_NO_FLUSH                    As Long = 0
+Private Const Z_DEFAULT_STRATEGY            As Long = 0
+Private Const Z_DEFLATED                    As Long = 8
+Private Const ZLIB_VERSION                  As String = "1.3.1"
 
 Private Const VT_BYREF                      As Long = &H4000
 '--- for FindFirstFile
@@ -309,6 +820,16 @@ Private m_lFileCount                As Long
 Private m_uFiles()                  As UcsFileInfo
 Private m_lCurrentFile              As Long
 Private m_lCodePage                 As Long
+Private m_hZlib                     As Long     '--- handle ke zlib1.dll (0 jika tidak tersedia)
+Private m_bZlibChecked              As Boolean  '--- flag apakah sudah dicek
+Private m_hArcInt                   As Long     '--- handle ke archiveint.dll
+Private m_bArcChecked               As Boolean  '--- flag apakah sudah dicek
+Private m_hArcRead                  As Long     '--- handle read archive (ArcOpen)
+Private m_hArcWrite                 As Long     '--- handle write archive (ArcCreate)
+Private m_lArcEntryCount            As Long     '--- jumlah entry di arsip
+Private m_sArcEntries()             As String   '--- nama entry
+Private m_lArcSizes()               As Long     '--- ukuran entry
+Private m_lArcTypes()               As Long     '--- tipe entry (file/dir)
 #If ImplDecompress Then
     Private m_sComment              As String
     Private m_vArchiveFile          As Variant
@@ -316,6 +837,24 @@ Private m_lCodePage                 As Long
 #If ImplCrypto Then
     Private m_uCrypto               As UcsZipCryptoType
 #End If ' ImplCrypto
+
+'--- zlib stream structure (matches z_stream in zlib.h for 32-bit)
+Private Type z_stream
+    next_in             As Long     ' pointer to input buffer
+    avail_in            As Long     ' bytes available at next_in
+    total_in            As Long     ' total bytes read so far
+    next_out            As Long     ' pointer to output buffer
+    avail_out           As Long     ' bytes available at next_out
+    total_out           As Long     ' total bytes written so far
+    msg                 As Long     ' pointer to error message
+    state               As Long     ' internal state (opaque)
+    zalloc              As Long     ' custom allocator (0 = default)
+    zfree               As Long     ' custom free (0 = default)
+    opaque              As Long     ' private data for allocator
+    data_type           As Long     ' best guess about data type
+    adler               As Long     ' Adler-32 / CRC-32 checksum
+    reserved            As Long     ' reserved for future use
+End Type
 
 Private Type UcsVfsFileType
     Handle              As Long
@@ -519,7 +1058,7 @@ End Type
 '=========================================================================
 
 Public Property Get SemVersion() As String
-    SemVersion = "0.4.0-merged"
+    SemVersion = "0.6.0-merged"
 End Property
 
 Public Property Get ThunkBuildDate() As String
@@ -528,6 +1067,27 @@ End Property
 
 Public Property Get LastError() As String
     LastError = m_sLastError
+End Property
+
+Public Property Get ZlibAvailable() As Boolean
+    ZlibAvailable = pvZlibAvailable()
+End Property
+
+Public Property Get ZlibVersion() As String
+    If pvZlibAvailable() Then
+        Dim lPtr As Long
+        lPtr = zlib_zlibVersion()
+        If lPtr <> 0 Then
+            Dim lLen As Long
+            lLen = lstrlenA(lPtr)
+            If lLen > 0 And lLen < 50 Then
+                Dim baVer() As Byte
+                ReDim baVer(0 To lLen - 1)
+                Call CopyMemory(baVer(0), ByVal lPtr, lLen)
+                ZlibVersion = StrConv(baVer, vbUnicode)
+            End If
+        End If
+    End If
 End Property
 
 Public Property Get FileCount() As Long
@@ -591,6 +1151,8 @@ Public Function GzCompress(ByVal Source As Variant, ByRef Destination As Variant
     ' Deskripsi:
     ' Mengkompresi sumber menjadi format GZ ke tujuan.
     ' Menggunakan streaming (per-chunk) untuk mendukung file besar.
+    ' Jika zlib1.dll tersedia, menggunakan zlib (Dynamic Huffman, kompresi lebih baik).
+    ' Jika tidak, fallback ke embedded thunk (Fixed Huffman).
     '
     ' Parameter:
     ' Source (Variant): Sumber data yang akan dikompres. Bisa berupa:
@@ -614,6 +1176,14 @@ Public Function GzCompress(ByVal Source As Variant, ByRef Destination As Variant
     
     On Error GoTo EH
     pvSetError
+    
+    ' 0. Jika zlib1.dll tersedia, gunakan jalur zlib (Dynamic Huffman)
+    If pvZlibAvailable() Then
+        GzCompress = pvGzCompressZlib(Source, Destination, Level)
+        Exit Function
+    End If
+    
+    ' === FALLBACK: Thunk DEFLATE (Fixed Huffman) ===
     
     ' 1. Validasi dan siapkan level kompresi
     Level = IIf(Level < acNoCompression, acNormalCompression, IIf(Level > acMaxCompression, acMaxCompression, Level))
@@ -711,11 +1281,120 @@ EH:
     Resume QH
 End Function
 
+Private Function pvGzCompressZlib(ByVal Source As Variant, ByRef Destination As Variant, ByVal Level As ArchiveCompressionLevel) As Boolean
+    '--- GzCompress menggunakan zlib1.dll (Dynamic Huffman, kompresi lebih baik)
+    '--- windowBits = -15 (raw deflate, tanpa zlib header)
+    Const FUNC_NAME As String = "GzCompress[zlib]"
+    Dim uStrm As z_stream
+    Dim baBuffer() As Byte, baOut() As Byte
+    Dim lCrc32 As Long, cTotalSize As Currency
+    Dim gzHeader(0 To 9) As Byte, gzFooter(0 To 7) As Byte
+    Dim uSourceFile As UcsVfsFileType, uDestFile As UcsVfsFileType
+    Dim lSize As Long, lRet As Long
+    Dim bToByteArray As Boolean
+    Dim baGzOut() As Byte
+    Dim bDeflateInit As Boolean
+    
+    On Error GoTo EH
+    
+    ' 1. Validasi level
+    Level = IIf(Level < acNoCompression, acNormalCompression, IIf(Level > acMaxCompression, acMaxCompression, Level))
+    
+    ' 2. Buka sumber
+    uSourceFile = pvVfsOpen(Source)
+    pvVfsSeek uSourceFile, 0, FILE_BEGIN
+    
+    ' 3. GZ Header (RFC 1952)
+    gzHeader(0) = &H1F: gzHeader(1) = &H8B
+    gzHeader(2) = 8                           ' CM: deflate
+    gzHeader(3) = 0                           ' FLG: no extras
+    gzHeader(8) = IIf(Level >= acMaxCompression, 2, IIf(Level <= acFastestCompression, 4, 0))
+    gzHeader(9) = 11                          ' OS: NTFS/Windows
+    
+    ' 4. Siapkan output
+    bToByteArray = IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte)
+    If bToByteArray Then
+        ReDim baGzOut(0 To LNG_IOBUF_SIZE - 1) As Byte
+        uDestFile = pvVfsCreate(baGzOut)
+    Else
+        uDestFile = pvVfsCreate(Destination)
+    End If
+    pvVfsWrite uDestFile, VarPtr(gzHeader(0)), 10
+    
+    ' 5. Init deflate (windowBits = -15 → raw deflate tanpa zlib/gzip wrapper)
+    lRet = zlib_deflateInit2(uStrm, CLng(Level), Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY, ZLIB_VERSION, LenB(uStrm))
+    If lRet <> Z_OK Then Err.Raise vbObjectError, FUNC_NAME, ERR_INIT_COMPRESSOR
+    bDeflateInit = True
+    
+    ' 6. Streaming deflate
+    ReDim baBuffer(0 To LNG_IOBUF_SIZE - 1) As Byte
+    ReDim baOut(0 To LNG_IOBUF_SIZE - 1) As Byte
+    lCrc32 = 0  ' zlib crc32 mulai dari 0
+    cTotalSize = 0
+    
+    Do
+        lSize = pvVfsRead(uSourceFile, VarPtr(baBuffer(0)), LNG_IOBUF_SIZE)
+        
+        ' Hitung CRC32 dan total size
+        If lSize > 0 Then
+            lCrc32 = zlib_crc32(lCrc32, VarPtr(baBuffer(0)), lSize)
+            cTotalSize = cTotalSize + lSize
+        End If
+        
+        uStrm.next_in = VarPtr(baBuffer(0))
+        uStrm.avail_in = lSize
+        
+        ' Flush mode: Z_FINISH jika ini chunk terakhir
+        Dim lFlush As Long
+        lFlush = IIf(lSize < LNG_IOBUF_SIZE, Z_FINISH, Z_NO_FLUSH)
+        
+        Do
+            uStrm.next_out = VarPtr(baOut(0))
+            uStrm.avail_out = LNG_IOBUF_SIZE
+            
+            lRet = zlib_deflate(uStrm, lFlush)
+            If lRet < 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_COMPRESSING
+            
+            Dim lHave As Long
+            lHave = LNG_IOBUF_SIZE - uStrm.avail_out
+            If lHave > 0 Then
+                pvVfsWrite uDestFile, VarPtr(baOut(0)), lHave
+            End If
+        Loop While uStrm.avail_out = 0
+    Loop While lRet <> Z_STREAM_END
+    
+    ' 7. GZ Footer
+    Dim lISize As Long
+    lISize = pvToInt32(cTotalSize)
+    Call CopyMemory(gzFooter(0), lCrc32, 4)
+    Call CopyMemory(gzFooter(4), lISize, 4)
+    pvVfsWrite uDestFile, VarPtr(gzFooter(0)), 8
+    pvVfsSetEof uDestFile, uDestFile.FileName
+    
+    ' 8. Output
+    If bToByteArray Then
+        Destination = baGzOut
+    End If
+    
+    pvGzCompressZlib = True
+QH:
+    On Error Resume Next
+    If bDeflateInit Then zlib_deflateEnd uStrm
+    pvVfsClose uSourceFile
+    pvVfsClose uDestFile
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    pvGzCompressZlib = False
+    Resume QH
+End Function
+
 Public Function GzDecompress(ByVal SourceGz As Variant, ByRef Destination As Variant) As Boolean
     ' Deskripsi:
     ' Mendekompresi sumber GZ ke tujuan menggunakan streaming (per-chunk).
     ' Mendukung file GZ dengan flag FEXTRA, FNAME, FCOMMENT, FHCRC (RFC 1952).
     ' Mendukung file .gz besar — tidak perlu memuat seluruh file ke memori.
+    ' Jika zlib1.dll tersedia, menggunakan zlib inflate (mendukung Dynamic Huffman).
     '
     ' Parameter:
     ' SourceGz (Variant): Sumber data GZ yang akan didekompres. Bisa berupa:
@@ -749,6 +1428,14 @@ Public Function GzDecompress(ByVal SourceGz As Variant, ByRef Destination As Var
     
     On Error GoTo EH
     m_sLastError = ""
+    
+    ' 0. Jika zlib1.dll tersedia, gunakan jalur zlib (mendukung Dynamic Huffman)
+    If pvZlibAvailable() Then
+        GzDecompress = pvGzDecompressZlib(SourceGz, Destination)
+        Exit Function
+    End If
+    
+    ' === FALLBACK: Thunk INFLATE ===
     
     ' 1. Buka sumber GZ dan tentukan ukuran
     uSourceFile = pvVfsOpen(SourceGz)
@@ -872,6 +1559,153 @@ QH:
 EH:
     m_sLastError = Err.Description
     GzDecompress = False
+    Resume QH
+End Function
+
+Private Function pvGzDecompressZlib(ByVal SourceGz As Variant, ByRef Destination As Variant) As Boolean
+    '--- GzDecompress menggunakan zlib1.dll (mendukung Dynamic Huffman blocks)
+    '--- windowBits = -15 (raw inflate)
+    Const FUNC_NAME As String = "GzDecompress[zlib]"
+    Const LNG_HEADER_BUF As Long = 4096
+    Dim uStrm As z_stream
+    Dim baBuffer() As Byte, baOut() As Byte
+    Dim lCrc32_Stored As Long, lSize_Stored As Long
+    Dim lCrc32_Calculated As Long
+    Dim uSourceFile As UcsVfsFileType, uDestFile As UcsVfsFileType
+    Dim lDataOffset As Long
+    Dim bFlags As Byte
+    Dim lExtraLen As Integer
+    Dim baHeader() As Byte
+    Dim baFooter(0 To 7) As Byte
+    Dim cFileSize As Currency
+    Dim cDataSize As Currency
+    Dim cRead As Currency
+    Dim cTotalOut As Currency
+    Dim lSize As Long, lRet As Long
+    Dim lHeaderLen As Long
+    Dim bToByteArray As Boolean
+    Dim baDecompOut() As Byte
+    Dim bInflateInit As Boolean
+    
+    On Error GoTo EH
+    
+    ' 1. Buka sumber dan baca header
+    uSourceFile = pvVfsOpen(SourceGz)
+    cFileSize = pvVfsSeek(uSourceFile, 0, FILE_END)
+    If cFileSize < 18 Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_TOO_SHORT
+    
+    lHeaderLen = LNG_HEADER_BUF
+    If cFileSize < lHeaderLen Then lHeaderLen = pvToInt32(cFileSize)
+    ReDim baHeader(0 To lHeaderLen - 1)
+    pvVfsSeek uSourceFile, 0, FILE_BEGIN
+    pvVfsRead uSourceFile, VarPtr(baHeader(0)), lHeaderLen
+    
+    ' 2. Validasi magic
+    If baHeader(0) <> &H1F Or baHeader(1) <> &H8B Or baHeader(2) <> 8 Then
+        Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_INVALID_HEADER
+    End If
+    
+    ' 3. Parse GZ header flags (RFC 1952) — sama dengan thunk path
+    bFlags = baHeader(3)
+    lDataOffset = 10
+    If (bFlags And &H4) <> 0 Then
+        If lDataOffset + 2 > lHeaderLen Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_INVALID_HEADER
+        Call CopyMemory(lExtraLen, baHeader(lDataOffset), 2)
+        lDataOffset = lDataOffset + 2 + lExtraLen
+    End If
+    If (bFlags And &H8) <> 0 Then
+        Do While lDataOffset < lHeaderLen
+            If baHeader(lDataOffset) = 0 Then lDataOffset = lDataOffset + 1: Exit Do
+            lDataOffset = lDataOffset + 1
+        Loop
+    End If
+    If (bFlags And &H10) <> 0 Then
+        Do While lDataOffset < lHeaderLen
+            If baHeader(lDataOffset) = 0 Then lDataOffset = lDataOffset + 1: Exit Do
+            lDataOffset = lDataOffset + 1
+        Loop
+    End If
+    If (bFlags And &H2) <> 0 Then lDataOffset = lDataOffset + 2
+    If lDataOffset >= pvToInt32(cFileSize) - 8 Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_INVALID_HEADER
+    
+    ' 4. Baca footer
+    pvVfsSeek uSourceFile, cFileSize - 8, FILE_BEGIN
+    pvVfsRead uSourceFile, VarPtr(baFooter(0)), 8
+    Call CopyMemory(lCrc32_Stored, baFooter(0), 4)
+    Call CopyMemory(lSize_Stored, baFooter(4), 4)
+    cDataSize = cFileSize - lDataOffset - 8
+    
+    ' 5. Siapkan output
+    bToByteArray = IsMissing(Destination) Or VarType(Destination) = (vbArray Or vbByte)
+    If bToByteArray Then
+        ReDim baDecompOut(0 To LNG_IOBUF_SIZE - 1) As Byte
+        uDestFile = pvVfsCreate(baDecompOut)
+    Else
+        uDestFile = pvVfsCreate(Destination)
+    End If
+    
+    ' 6. Init inflate (windowBits = -15 → raw inflate)
+    lRet = zlib_inflateInit2(uStrm, -15, ZLIB_VERSION, LenB(uStrm))
+    If lRet <> Z_OK Then Err.Raise vbObjectError, FUNC_NAME, ERR_INIT_DECOMPRESSOR
+    bInflateInit = True
+    
+    ' 7. Streaming inflate
+    ReDim baBuffer(0 To LNG_IOBUF_SIZE - 1) As Byte
+    ReDim baOut(0 To LNG_IOBUF_SIZE - 1) As Byte
+    pvVfsSeek uSourceFile, CCur(lDataOffset), FILE_BEGIN
+    lCrc32_Calculated = 0
+    cRead = 0
+    cTotalOut = 0
+    
+    Do While cRead < cDataSize
+        lSize = LNG_IOBUF_SIZE
+        If cDataSize - cRead < lSize Then lSize = pvToInt32(cDataSize - cRead)
+        lSize = pvVfsRead(uSourceFile, VarPtr(baBuffer(0)), lSize)
+        If lSize = 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_DECOMPRESSING
+        cRead = cRead + lSize
+        
+        uStrm.next_in = VarPtr(baBuffer(0))
+        uStrm.avail_in = lSize
+        
+        Do
+            uStrm.next_out = VarPtr(baOut(0))
+            uStrm.avail_out = LNG_IOBUF_SIZE
+            
+            lRet = zlib_inflate(uStrm, Z_NO_FLUSH)
+            If lRet < 0 Then Err.Raise vbObjectError, FUNC_NAME, ERR_DECOMPRESSING
+            
+            Dim lHave As Long
+            lHave = LNG_IOBUF_SIZE - uStrm.avail_out
+            If lHave > 0 Then
+                lCrc32_Calculated = zlib_crc32(lCrc32_Calculated, VarPtr(baOut(0)), lHave)
+                pvVfsWrite uDestFile, VarPtr(baOut(0)), lHave
+                cTotalOut = cTotalOut + lHave
+            End If
+        Loop While uStrm.avail_out = 0
+        
+        If lRet = Z_STREAM_END Then Exit Do
+    Loop
+    
+    pvVfsSetEof uDestFile, uDestFile.FileName
+    
+    ' 8. Validasi CRC32 dan ISIZE
+    If lCrc32_Calculated <> lCrc32_Stored Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_CRC_MISMATCH
+    If pvToInt32(cTotalOut) <> lSize_Stored Then Err.Raise vbObjectError, FUNC_NAME, ERR_GZ_SIZE_MISMATCH
+    
+    If bToByteArray Then
+        Destination = baDecompOut
+    End If
+    
+    pvGzDecompressZlib = True
+QH:
+    On Error Resume Next
+    If bInflateInit Then zlib_inflateEnd uStrm
+    pvVfsClose uSourceFile
+    pvVfsClose uDestFile
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    pvGzDecompressZlib = False
     Resume QH
 End Function
 
@@ -3216,8 +4050,693 @@ Private Sub Class_Initialize()
     m_lCodePage = CP_OEMCP
 End Sub
 
-#If ImplCrypto Then
-    Private Sub Class_Terminate()
+Private Sub Class_Terminate()
+    On Error Resume Next
+    #If ImplCrypto Then
         pvCryptoTerminate
-    End Sub
-#End If ' ImplCrypto
+    #End If
+    '--- lepas zlib1.dll
+    If m_hZlib <> 0 Then
+        FreeLibrary m_hZlib
+        m_hZlib = 0
+    End If
+    '--- tutup arsip yang masih terbuka
+    ArcClose
+    '--- lepas archiveint.dll
+    If m_hArcInt <> 0 Then
+        FreeLibrary m_hArcInt
+        m_hArcInt = 0
+    End If
+End Sub
+
+'=========================================================================
+'
+'   Multi-Format Archive Methods (via archiveint.dll / libarchive)
+'   Tersedia jika Windows 11 23H2+ (archiveint.dll di SysWOW64)
+'
+'=========================================================================
+
+Public Property Get ArcAvailable() As Boolean
+    ArcAvailable = pvArcAvailable()
+End Property
+
+Public Property Get ArcVersion() As String
+    If pvArcAvailable() Then
+        Dim lPtr As Long
+        lPtr = arc_version_string()
+        If lPtr <> 0 Then
+            Dim lLen As Long
+            lLen = lstrlenA(lPtr)
+            If lLen > 0 And lLen < 100 Then
+                Dim baVer() As Byte
+                ReDim baVer(0 To lLen - 1)
+                Call CopyMemory(baVer(0), ByVal lPtr, lLen)
+                ArcVersion = StrConv(baVer, vbUnicode)
+            End If
+        End If
+    End If
+End Property
+
+Public Function ArcOpen(ByVal ArchiveFile As String, Optional ByVal ArcType As ArchiveType = arAuto, Optional ByVal Password As String = "") As Boolean
+    '--- Buka arsip multi-format untuk dibaca.
+    '--- Otomatis deteksi format. Mendukung: ZIP, 7z, TAR, RAR, CAB, ISO, dll.
+    Const FUNC_NAME As String = "ArcOpen"
+    Dim hEntry As Long, lRet As Long
+    Dim lPtr As Long, lLen As Long
+    
+    On Error GoTo EH
+    pvSetError
+    If Not pvArcAvailable() Then Err.Raise vbObjectError, FUNC_NAME, "archiveint.dll tidak tersedia"
+    
+    '--- Tutup arsip sebelumnya jika ada
+    ArcClose
+    
+    '--- Buat handle baru
+    m_hArcRead = arc_read_new()
+    If m_hArcRead = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuat archive reader"
+    
+    '--- Support semua format dan filter
+    arc_read_support_format_all m_hArcRead
+    arc_read_support_filter_all m_hArcRead
+    
+    '--- Set password jika ada
+    If LenB(Password) <> 0 Then
+        Dim baPw() As Byte
+        baPw = ToUtf8Array(Password)
+        ReDim Preserve baPw(0 To UBound(baPw) + 1)
+        baPw(UBound(baPw)) = 0
+        arc_read_add_passphrase m_hArcRead, VarPtr(baPw(0))
+    End If
+    
+    '--- Buka file
+    Dim baFn() As Byte
+    baFn = ToUtf8Array(ArchiveFile)
+    ReDim Preserve baFn(0 To UBound(baFn) + 1)
+    baFn(UBound(baFn)) = 0
+    lRet = arc_read_open_filename(m_hArcRead, VarPtr(baFn(0)), ARC_BLOCK_SIZE)
+    If lRet <> ARC_OK Then
+        Dim sErr As String
+        sErr = pvArcErrorString(m_hArcRead)
+        arc_read_free m_hArcRead: m_hArcRead = 0
+        Err.Raise vbObjectError, FUNC_NAME, "Gagal membuka arsip: " & sErr
+    End If
+    
+    '--- Scan semua entry
+    m_lArcEntryCount = 0
+    ReDim m_sArcEntries(0 To 255)
+    ReDim m_lArcSizes(0 To 255)
+    ReDim m_lArcTypes(0 To 255)
+    
+    Do
+        lRet = arc_read_next_header(m_hArcRead, hEntry)
+        If lRet = ARC_EOF Then Exit Do
+        If lRet < ARC_OK And lRet <> ARC_WARN Then Exit Do
+        
+        '--- Grow arrays jika perlu
+        If m_lArcEntryCount > UBound(m_sArcEntries) Then
+            ReDim Preserve m_sArcEntries(0 To m_lArcEntryCount * 2)
+            ReDim Preserve m_lArcSizes(0 To m_lArcEntryCount * 2)
+            ReDim Preserve m_lArcTypes(0 To m_lArcEntryCount * 2)
+        End If
+        
+        '--- Baca nama (wide string)
+        lPtr = arc_entry_pathname_w(hEntry)
+        If lPtr <> 0 Then
+            m_sArcEntries(m_lArcEntryCount) = pvWideToString(lPtr)
+        End If
+        m_lArcSizes(m_lArcEntryCount) = arc_entry_size(hEntry)
+        m_lArcTypes(m_lArcEntryCount) = arc_entry_filetype(hEntry)
+        m_lArcEntryCount = m_lArcEntryCount + 1
+    Loop
+    
+    '--- Tutup dan buka ulang (libarchive bersifat streaming)
+    arc_read_close m_hArcRead
+    arc_read_free m_hArcRead
+    
+    '--- Buka ulang untuk extraction nanti
+    m_hArcRead = arc_read_new()
+    arc_read_support_format_all m_hArcRead
+    arc_read_support_filter_all m_hArcRead
+    If LenB(Password) <> 0 Then arc_read_add_passphrase m_hArcRead, VarPtr(baPw(0))
+    arc_read_open_filename m_hArcRead, VarPtr(baFn(0)), ARC_BLOCK_SIZE
+    
+    ArcOpen = True
+QH:
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcOpen = False
+    Resume QH
+End Function
+
+Public Sub ArcClose()
+    On Error Resume Next
+    If m_hArcRead <> 0 Then
+        arc_read_close m_hArcRead
+        arc_read_free m_hArcRead
+        m_hArcRead = 0
+    End If
+    If m_hArcWrite <> 0 Then
+        arc_write_close m_hArcWrite
+        arc_write_free m_hArcWrite
+        m_hArcWrite = 0
+    End If
+    m_lArcEntryCount = 0
+End Sub
+
+Public Property Get ArcFileCount() As Long
+    ArcFileCount = m_lArcEntryCount
+End Property
+
+Public Function ArcFileInfo(ByVal Index As Long) As Variant
+    '--- Kembalikan Array(Name, Size, Type) untuk entry ke-Index
+    If Index < 0 Or Index >= m_lArcEntryCount Then
+        ArcFileInfo = Array("", 0, 0)
+        Exit Function
+    End If
+    ArcFileInfo = Array(m_sArcEntries(Index), m_lArcSizes(Index), m_lArcTypes(Index))
+End Function
+
+Public Function ArcExtract(ByVal ArchiveFile As String, ByVal TargetFolder As String, _
+        Optional ByVal Password As String = "") As Boolean
+    '--- Ekstrak semua file dari arsip ke folder tujuan.
+    Const FUNC_NAME As String = "ArcExtract"
+    Dim hRead As Long, hEntry As Long
+    Dim lRet As Long
+    Dim sName As String, sOutPath As String
+    Dim baBuffer() As Byte
+    Dim iFile As Integer
+    Dim lRead As Long
+    
+    On Error GoTo EH
+    pvSetError
+    If Not pvArcAvailable() Then Err.Raise vbObjectError, FUNC_NAME, "archiveint.dll tidak tersedia"
+    
+    '--- Pastikan folder tujuan ada
+    If Right$(TargetFolder, 1) <> "\" Then TargetFolder = TargetFolder & "\"
+    pvMkDirRecursive TargetFolder
+    
+    '--- Buka arsip
+    hRead = arc_read_new()
+    If hRead = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuat archive reader"
+    arc_read_support_format_all hRead
+    arc_read_support_filter_all hRead
+    
+    If LenB(Password) <> 0 Then
+        Dim baPw() As Byte
+        baPw = ToUtf8Array(Password)
+        ReDim Preserve baPw(0 To UBound(baPw) + 1)
+        baPw(UBound(baPw)) = 0
+        arc_read_add_passphrase hRead, VarPtr(baPw(0))
+    End If
+    
+    Dim baFn() As Byte
+    baFn = ToUtf8Array(ArchiveFile)
+    ReDim Preserve baFn(0 To UBound(baFn) + 1)
+    baFn(UBound(baFn)) = 0
+    lRet = arc_read_open_filename(hRead, VarPtr(baFn(0)), ARC_BLOCK_SIZE)
+    If lRet <> ARC_OK Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuka: " & pvArcErrorString(hRead)
+    
+    '--- Ekstrak semua entry
+    ReDim baBuffer(0 To ARC_BLOCK_SIZE - 1)
+    Do
+        lRet = arc_read_next_header(hRead, hEntry)
+        If lRet = ARC_EOF Then Exit Do
+        If lRet < ARC_OK And lRet <> ARC_WARN Then Exit Do
+        
+        Dim lPtr As Long
+        lPtr = arc_entry_pathname_w(hEntry)
+        If lPtr = 0 Then GoTo NextEntry
+        sName = pvWideToString(lPtr)
+        If LenB(sName) = 0 Then GoTo NextEntry
+        
+        '--- Ganti "/" jadi "\"
+        sName = Replace$(sName, "/", "\")
+        sOutPath = TargetFolder & sName
+        
+        '--- Cek apakah directory
+        Dim lType As Long
+        lType = arc_entry_filetype(hEntry)
+        If lType = ARC_IFDIR Then
+            pvMkDirRecursive sOutPath
+            GoTo NextEntry
+        End If
+        
+        '--- Pastikan parent folder ada
+        Dim sDir As String
+        sDir = Left$(sOutPath, InStrRev(sOutPath, "\"))
+        If LenB(sDir) > 0 Then pvMkDirRecursive sDir
+        
+        '--- Tulis file
+        iFile = FreeFile
+        Open sOutPath For Binary Access Write As #iFile
+        Do
+            lRead = arc_read_data(hRead, VarPtr(baBuffer(0)), ARC_BLOCK_SIZE)
+            If lRead <= 0 Then Exit Do
+            Dim baChunk() As Byte
+            ReDim baChunk(0 To lRead - 1)
+            CopyMemory baChunk(0), baBuffer(0), lRead
+            Put #iFile, , baChunk
+        Loop
+        Close #iFile
+        iFile = 0
+        
+NextEntry:
+    Loop
+    
+    arc_read_close hRead
+    arc_read_free hRead
+    
+    ArcExtract = True
+QH:
+    On Error Resume Next
+    If iFile > 0 Then Close #iFile
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcExtract = False
+    On Error Resume Next
+    If hRead <> 0 Then arc_read_close hRead: arc_read_free hRead
+    Resume QH
+End Function
+
+Public Function ArcCreate(ByVal ArchiveFile As String, Optional ByVal ArcType As ArchiveType = arAuto, _
+        Optional ByVal Level As ArchiveCompressionLevel = acNormalCompression) As Boolean
+    '--- Buat arsip baru untuk menulis.
+    Const FUNC_NAME As String = "ArcCreate"
+    Dim lRet As Long
+    
+    On Error GoTo EH
+    pvSetError
+    If Not pvArcAvailable() Then Err.Raise vbObjectError, FUNC_NAME, "archiveint.dll tidak tersedia"
+    
+    '--- Tutup arsip sebelumnya
+    ArcClose
+    
+    '--- Auto-detect format dari ekstensi
+    If ArcType = arAuto Then ArcType = pvDetectArchiveType(ArchiveFile)
+    
+    '--- Buat writer
+    m_hArcWrite = arc_write_new()
+    If m_hArcWrite = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuat archive writer"
+    
+    '--- Set format dan filter
+    pvSetArcFormat m_hArcWrite, ArcType
+    
+    '--- Set compression level
+    Dim baOpt() As Byte, sOpt As String
+    sOpt = "compression-level=" & CStr(CLng(Level))
+    baOpt = ToUtf8Array(sOpt)
+    ReDim Preserve baOpt(0 To UBound(baOpt) + 1)
+    baOpt(UBound(baOpt)) = 0
+    arc_write_set_options m_hArcWrite, VarPtr(baOpt(0))
+    
+    '--- Buka file output
+    Dim baFn() As Byte
+    baFn = ToUtf8Array(ArchiveFile)
+    ReDim Preserve baFn(0 To UBound(baFn) + 1)
+    baFn(UBound(baFn)) = 0
+    lRet = arc_write_open_filename(m_hArcWrite, VarPtr(baFn(0)))
+    If lRet <> ARC_OK Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuat file: " & pvArcErrorString(m_hArcWrite)
+    
+    ArcCreate = True
+QH:
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcCreate = False
+    Resume QH
+End Function
+
+Public Function ArcAddFile(ByVal FilePath As String, Optional ByVal ArcName As String = "") As Boolean
+    '--- Tambahkan file ke arsip yang sedang ditulis.
+    Const FUNC_NAME As String = "ArcAddFile"
+    Dim hEntry As Long, lRet As Long
+    Dim iFile As Integer, lFileSize As Long
+    Dim baBuffer() As Byte
+    Dim lRead As Long
+    
+    On Error GoTo EH
+    If m_hArcWrite = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Arsip belum dibuka untuk menulis"
+    
+    '--- Tentukan nama di arsip
+    If LenB(ArcName) = 0 Then
+        ArcName = Mid$(FilePath, InStrRev(FilePath, "\") + 1)
+    End If
+    
+    '--- Dapatkan ukuran file
+    lFileSize = FileLen(FilePath)
+    
+    '--- Buat entry
+    hEntry = arc_entry_new()
+    If hEntry = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuat entry"
+    
+    Dim baName() As Byte
+    baName = ToUtf8Array(Replace$(ArcName, "\", "/"))
+    ReDim Preserve baName(0 To UBound(baName) + 1)
+    baName(UBound(baName)) = 0
+    arc_entry_set_pathname_utf8 hEntry, VarPtr(baName(0))
+    arc_entry_set_size hEntry, lFileSize
+    arc_entry_set_filetype hEntry, ARC_IFREG
+    arc_entry_set_perm hEntry, ARC_PERM_FILE
+    
+    lRet = arc_write_header(m_hArcWrite, hEntry)
+    If lRet < ARC_OK And lRet <> ARC_WARN Then
+        arc_entry_free hEntry
+        Err.Raise vbObjectError, FUNC_NAME, "Gagal menulis header: " & pvArcErrorString(m_hArcWrite)
+    End If
+    
+    '--- Tulis data file
+    ReDim baBuffer(0 To ARC_BLOCK_SIZE - 1)
+    iFile = FreeFile
+    Open FilePath For Binary Access Read As #iFile
+    Do While Not EOF(iFile)
+        lRead = LOF(iFile) - Seek(iFile) + 1
+        If lRead > ARC_BLOCK_SIZE Then lRead = ARC_BLOCK_SIZE
+        If lRead <= 0 Then Exit Do
+        Dim baChunk() As Byte
+        ReDim baChunk(0 To lRead - 1)
+        Get #iFile, , baChunk
+        arc_write_data m_hArcWrite, VarPtr(baChunk(0)), lRead
+    Loop
+    Close #iFile: iFile = 0
+    
+    arc_write_finish_entry m_hArcWrite
+    arc_entry_free hEntry
+    
+    ArcAddFile = True
+QH:
+    On Error Resume Next
+    If iFile > 0 Then Close #iFile
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcAddFile = False
+    Resume QH
+End Function
+
+Public Function ArcAddFolder(ByVal FolderPath As String, Optional ByVal Recursive As Boolean = True, _
+        Optional ByVal BaseFolder As String = "") As Boolean
+    '--- Tambahkan semua file dari folder ke arsip.
+    Const FUNC_NAME As String = "ArcAddFolder"
+    Dim sFile As String, sRelative As String
+    
+    On Error GoTo EH
+    If m_hArcWrite = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Arsip belum dibuka untuk menulis"
+    
+    If Right$(FolderPath, 1) <> "\" Then FolderPath = FolderPath & "\"
+    If LenB(BaseFolder) = 0 Then BaseFolder = FolderPath
+    If Right$(BaseFolder, 1) <> "\" Then BaseFolder = BaseFolder & "\"
+    
+    '--- Scan files
+    sFile = Dir$(FolderPath & "*.*")
+    Do While LenB(sFile) <> 0
+        sRelative = Mid$(FolderPath & sFile, Len(BaseFolder) + 1)
+        ArcAddFile FolderPath & sFile, sRelative
+        sFile = Dir$
+    Loop
+    
+    '--- Scan subdirectories
+    If Recursive Then
+        Dim sDir As String
+        sDir = Dir$(FolderPath & "*.*", vbDirectory)
+        Do While LenB(sDir) <> 0
+            If sDir <> "." And sDir <> ".." Then
+                If (GetAttr(FolderPath & sDir) And vbDirectory) = vbDirectory Then
+                    ArcAddFolder FolderPath & sDir & "\", True, BaseFolder
+                End If
+            End If
+            sDir = Dir$
+        Loop
+    End If
+    
+    ArcAddFolder = True
+QH:
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcAddFolder = False
+    Resume QH
+End Function
+
+Public Function ArcAddBytes(ByVal Name As String, ByRef Data() As Byte) As Boolean
+    '--- Tambahkan data dari byte array ke arsip.
+    Const FUNC_NAME As String = "ArcAddBytes"
+    Dim hEntry As Long, lRet As Long
+    Dim lSize As Long
+    
+    On Error GoTo EH
+    If m_hArcWrite = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Arsip belum dibuka untuk menulis"
+    
+    lSize = UBound(Data) - LBound(Data) + 1
+    
+    hEntry = arc_entry_new()
+    If hEntry = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Gagal membuat entry"
+    
+    Dim baName() As Byte
+    baName = ToUtf8Array(Replace$(Name, "\", "/"))
+    ReDim Preserve baName(0 To UBound(baName) + 1)
+    baName(UBound(baName)) = 0
+    arc_entry_set_pathname_utf8 hEntry, VarPtr(baName(0))
+    arc_entry_set_size hEntry, lSize
+    arc_entry_set_filetype hEntry, ARC_IFREG
+    arc_entry_set_perm hEntry, ARC_PERM_FILE
+    
+    lRet = arc_write_header(m_hArcWrite, hEntry)
+    If lRet < ARC_OK And lRet <> ARC_WARN Then
+        arc_entry_free hEntry
+        Err.Raise vbObjectError, FUNC_NAME, "Gagal menulis header"
+    End If
+    
+    arc_write_data m_hArcWrite, VarPtr(Data(LBound(Data))), lSize
+    arc_write_finish_entry m_hArcWrite
+    arc_entry_free hEntry
+    
+    ArcAddBytes = True
+QH:
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcAddBytes = False
+    Resume QH
+End Function
+
+Public Function ArcSave() As Boolean
+    '--- Simpan dan tutup arsip yang sedang ditulis.
+    Const FUNC_NAME As String = "ArcSave"
+    On Error GoTo EH
+    If m_hArcWrite = 0 Then Err.Raise vbObjectError, FUNC_NAME, "Tidak ada arsip yang sedang ditulis"
+    arc_write_close m_hArcWrite
+    arc_write_free m_hArcWrite
+    m_hArcWrite = 0
+    ArcSave = True
+QH:
+    Exit Function
+EH:
+    m_sLastError = Err.Description
+    ArcSave = False
+    Resume QH
+End Function
+
+'--- Helper: detect archive type dari ekstensi file
+Private Function pvDetectArchiveType(ByVal sFile As String) As ArchiveType
+    Dim sExt As String
+    sExt = LCase$(Mid$(sFile, InStrRev(sFile, ".") + 1))
+    Select Case sExt
+        Case "zip":     pvDetectArchiveType = arZip
+        Case "7z":      pvDetectArchiveType = arSevenZip
+        Case "tar":     pvDetectArchiveType = arTar
+        Case "tgz":     pvDetectArchiveType = arTarGz
+        Case "tbz2", "tb2": pvDetectArchiveType = arTarBz2
+        Case "txz":     pvDetectArchiveType = arTarXz
+        Case "tzst":    pvDetectArchiveType = arTarZst
+        Case "gz":      pvDetectArchiveType = arGz
+        Case "rar":     pvDetectArchiveType = arRar
+        Case "cab":     pvDetectArchiveType = arCab
+        Case "iso":     pvDetectArchiveType = arIso
+        Case "cpio":    pvDetectArchiveType = arCpio
+        Case "xar":     pvDetectArchiveType = arXar
+        Case Else:      pvDetectArchiveType = arZip
+    End Select
+End Function
+
+'--- Helper: set format + filter di archive writer
+Private Sub pvSetArcFormat(ByVal hWrite As Long, ByVal ArcType As ArchiveType)
+    Select Case ArcType
+        Case arZip
+            arc_write_set_format_zip hWrite
+            arc_write_add_filter_none hWrite
+        Case arSevenZip
+            arc_write_set_format_7zip hWrite
+            arc_write_add_filter_none hWrite
+        Case arTar
+            arc_write_set_format_ustar hWrite
+            arc_write_add_filter_none hWrite
+        Case arTarGz
+            arc_write_set_format_pax hWrite
+            arc_write_add_filter_gzip hWrite
+        Case arTarBz2
+            arc_write_set_format_pax hWrite
+            arc_write_add_filter_bzip2 hWrite
+        Case arTarXz
+            arc_write_set_format_pax hWrite
+            arc_write_add_filter_xz hWrite
+        Case arTarZst
+            arc_write_set_format_pax hWrite
+            arc_write_add_filter_zstd hWrite
+        Case arCpio
+            arc_write_set_format_cpio hWrite
+            arc_write_add_filter_none hWrite
+        Case arXar
+            arc_write_set_format_xar hWrite
+            arc_write_add_filter_none hWrite
+        Case Else
+            arc_write_set_format_zip hWrite
+            arc_write_add_filter_none hWrite
+    End Select
+End Sub
+
+'--- Helper: cek apakah archiveint.dll tersedia
+Private Function pvArcAvailable() As Boolean
+    If Not m_bArcChecked Then
+        m_bArcChecked = True
+        On Error Resume Next
+        m_hArcInt = LoadLibrary(StrPtr("archiveint.dll"))
+        On Error GoTo 0
+        If m_hArcInt <> 0 Then
+            On Error Resume Next
+            Dim lPtr As Long
+            lPtr = arc_version_string()
+            If Err.Number <> 0 Or lPtr = 0 Then
+                FreeLibrary m_hArcInt
+                m_hArcInt = 0
+            End If
+            On Error GoTo 0
+        End If
+    End If
+    pvArcAvailable = (m_hArcInt <> 0)
+End Function
+
+'--- Helper: error string dari libarchive
+Private Function pvArcErrorString(ByVal hArc As Long) As String
+    On Error Resume Next
+    Dim lPtr As Long
+    lPtr = arc_error_string(hArc)
+    If lPtr <> 0 Then
+        Dim lLen As Long
+        lLen = lstrlenA(lPtr)
+        If lLen > 0 And lLen < 1024 Then
+            Dim baMsg() As Byte
+            ReDim baMsg(0 To lLen - 1)
+            CopyMemory baMsg(0), ByVal lPtr, lLen
+            pvArcErrorString = StrConv(baMsg, vbUnicode)
+        End If
+    End If
+    If LenB(pvArcErrorString) = 0 Then pvArcErrorString = "Unknown error"
+End Function
+
+'--- Helper: wide string (LPCWSTR) ke VB String
+Private Function pvWideToString(ByVal lPtr As Long) As String
+    Dim lLen As Long
+    lLen = lstrlenW(lPtr)
+    If lLen > 0 And lLen < 32768 Then
+        pvWideToString = String$(lLen, 0)
+        CopyMemory ByVal StrPtr(pvWideToString), ByVal lPtr, lLen * 2
+    End If
+End Function
+
+'--- Helper: buat folder secara rekursif
+Private Sub pvMkDirRecursive(ByVal sPath As String)
+    If Right$(sPath, 1) = "\" Then sPath = Left$(sPath, Len(sPath) - 1)
+    If Dir$(sPath, vbDirectory) <> "" Then Exit Sub
+    Dim sParent As String
+    sParent = Left$(sPath, InStrRev(sPath, "\") - 1)
+    If LenB(sParent) > 2 Then pvMkDirRecursive sParent
+    On Error Resume Next
+    MkDir sPath
+    On Error GoTo 0
+End Sub
+
+Private Function pvZlibAvailable() As Boolean
+    '--- Cek apakah zlib1.dll tersedia. Hasilnya di-cache.
+    '--- Urutan: 1) Cek DLL di system/app path, 2) Extract dari embedded Base64
+    If Not m_bZlibChecked Then
+        m_bZlibChecked = True
+        '--- 1. Coba load dari system/app path dulu
+        On Error Resume Next
+        m_hZlib = LoadLibrary(StrPtr("zlib1.dll"))
+        On Error GoTo 0
+        '--- 2. Jika tidak ditemukan, extract dari embedded data
+        If m_hZlib = 0 Then
+            Dim sTempPath As String
+            sTempPath = pvExtractEmbeddedZlib()
+            If LenB(sTempPath) <> 0 Then
+                On Error Resume Next
+                m_hZlib = LoadLibrary(StrPtr(sTempPath))
+                On Error GoTo 0
+            End If
+        End If
+        '--- 3. Verifikasi DLL bisa dipanggil
+        If m_hZlib <> 0 Then
+            On Error Resume Next
+            Dim lPtr As Long
+            lPtr = zlib_zlibVersion()
+            If Err.Number <> 0 Or lPtr = 0 Then
+                FreeLibrary m_hZlib
+                m_hZlib = 0
+            End If
+            On Error GoTo 0
+        End If
+    End If
+    pvZlibAvailable = (m_hZlib <> 0)
+End Function
+
+Private Function pvExtractEmbeddedZlib() As String
+    '--- Extract embedded zlib1.dll ke %TEMP%\cArchive_zlib1.dll
+    '--- Jika file sudah ada dan ukurannya benar, skip extraction
+    Const LNG_ZLIB_SIZE As Long = 75264
+    Dim sDllPath As String
+    Dim sBase64 As String
+    Dim baData() As Byte
+    Dim iFile As Integer
+    
+    On Error GoTo EH
+    
+    '--- Tentukan path
+    sDllPath = Environ$("TEMP") & "\cArchive_zlib1.dll"
+    
+    '--- Cek apakah sudah ada dan ukurannya benar
+    If Dir$(sDllPath) <> "" Then
+        If FileLen(sDllPath) = LNG_ZLIB_SIZE Then
+            pvExtractEmbeddedZlib = sDllPath
+            Exit Function
+        End If
+        '--- Ukuran berbeda, hapus file lama
+        On Error Resume Next
+        Kill sDllPath
+        On Error GoTo EH
+    End If
+    
+    '--- Gabungkan semua konstanta Base64
+    sBase64 = STR_ZLIB_1 & STR_ZLIB_2 & STR_ZLIB_3 & STR_ZLIB_4 & STR_ZLIB_5 & _
+              STR_ZLIB_6 & STR_ZLIB_7 & STR_ZLIB_8 & STR_ZLIB_9 & STR_ZLIB_10 & _
+              STR_ZLIB_11 & STR_ZLIB_12 & STR_ZLIB_13 & STR_ZLIB_14 & STR_ZLIB_15 & _
+              STR_ZLIB_16 & STR_ZLIB_17 & STR_ZLIB_18 & STR_ZLIB_19 & STR_ZLIB_20
+    
+    '--- Decode Base64
+    baData = FromBase64Array(sBase64)
+    If UBound(baData) + 1 <> LNG_ZLIB_SIZE Then GoTo EH
+    
+    '--- Tulis ke file
+    iFile = FreeFile
+    Open sDllPath For Binary Access Write As #iFile
+        Put #iFile, , baData
+    Close #iFile
+    
+    pvExtractEmbeddedZlib = sDllPath
+    Exit Function
+EH:
+    On Error Resume Next
+    Close #iFile
+    pvExtractEmbeddedZlib = ""
+End Function
